@@ -34,6 +34,13 @@ Current implementation slice:
 The guarded OpenLDAP integration test is available under
 `test/integration/openldap`.
 
+## Documentation
+
+- [API contract](docs/api.md)
+- [Configuration](docs/configuration.md)
+- [Operations](docs/operations.md)
+- [Deployment samples](deploy/README.md)
+
 ## Local Development
 
 ```bash
