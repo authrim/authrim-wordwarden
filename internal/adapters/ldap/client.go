@@ -69,6 +69,48 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 	return result, nil
 }
 
+func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
+	conn, err := c.dial(ctx, false)
+	if err != nil {
+		return directory.VerifyPasswordResult{}, err
+	}
+	defer conn.Close()
+
+	if err := conn.Bind(c.config.BindDN, c.bindPassword); err != nil {
+		return directory.VerifyPasswordResult{}, normalizeLDAPError(err)
+	}
+
+	user, err := c.resolveUserWithAttributes(conn, request.Username, request.AttributeNames)
+	if err != nil {
+		if err == directory.ErrUserNotFound {
+			return directory.VerifyPasswordResult{
+				Success: false,
+				Reason:  "invalid_credentials",
+			}, nil
+		}
+		return directory.VerifyPasswordResult{}, err
+	}
+
+	if err := conn.Bind(user.dn, request.Password); err != nil {
+		if normalizeLDAPError(err) == directory.ErrInvalidCredentials {
+			return directory.VerifyPasswordResult{
+				Success: false,
+				Reason:  "invalid_credentials",
+			}, nil
+		}
+		return directory.VerifyPasswordResult{}, normalizeLDAPError(err)
+	}
+
+	return directory.VerifyPasswordResult{
+		Success: true,
+		Subject: directory.Subject{
+			DirectoryID: user.dn,
+			Username:    request.Username,
+		},
+		Attributes: user.attributes,
+	}, nil
+}
+
 func (c Client) dial(_ context.Context, allowInsecure bool) (*ldap.Conn, error) {
 	timeout := durationFromMS(c.timeouts.LDAPConnectMS, 500*time.Millisecond)
 	dialer := &net.Dialer{Timeout: timeout}
@@ -123,8 +165,22 @@ func (c Client) tlsConfig(allowInsecure bool) (*tls.Config, error) {
 }
 
 func (c Client) resolveUser(conn *ldap.Conn, username string) (string, error) {
+	user, err := c.resolveUserWithAttributes(conn, username, []string{"dn"})
+	if err != nil {
+		return "", err
+	}
+	return user.dn, nil
+}
+
+type resolvedUser struct {
+	dn         string
+	attributes map[string][]string
+}
+
+func (c Client) resolveUserWithAttributes(conn *ldap.Conn, username string, attributes []string) (resolvedUser, error) {
 	escapedUsername := ldap.EscapeFilter(username)
 	filter := strings.ReplaceAll(c.config.UserFilter, "{username}", escapedUsername)
+	searchAttributes := requestedAttributes(attributes, c.config.Attributes)
 	searchRequest := ldap.NewSearchRequest(
 		c.config.BaseDN,
 		ldap.ScopeWholeSubtree,
@@ -133,18 +189,59 @@ func (c Client) resolveUser(conn *ldap.Conn, username string) (string, error) {
 		int(durationFromMS(c.timeouts.LDAPSearchMS, time.Second).Seconds()),
 		false,
 		filter,
-		[]string{"dn"},
+		searchAttributes,
 		nil,
 	)
 
 	result, err := conn.Search(searchRequest)
 	if err != nil {
-		return "", normalizeLDAPError(err)
+		return resolvedUser{}, normalizeLDAPError(err)
 	}
 	if len(result.Entries) == 0 {
-		return "", directory.ErrUserNotFound
+		return resolvedUser{}, directory.ErrUserNotFound
 	}
-	return result.Entries[0].DN, nil
+
+	entry := result.Entries[0]
+	return resolvedUser{
+		dn:         entry.DN,
+		attributes: entryAttributes(entry, searchAttributes),
+	}, nil
+}
+
+func requestedAttributes(requested []string, allowed []string) []string {
+	if len(requested) == 0 {
+		return nil
+	}
+
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		allowedSet[name] = struct{}{}
+	}
+
+	result := make([]string, 0, len(requested))
+	seen := map[string]struct{}{}
+	for _, name := range requested {
+		if _, ok := allowedSet[name]; !ok {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result
+}
+
+func entryAttributes(entry *ldap.Entry, names []string) map[string][]string {
+	attrs := make(map[string][]string)
+	for _, name := range names {
+		values := entry.GetAttributeValues(name)
+		if len(values) > 0 {
+			attrs[name] = values
+		}
+	}
+	return attrs
 }
 
 func normalizeLDAPError(err error) error {

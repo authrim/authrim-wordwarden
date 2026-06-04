@@ -22,8 +22,10 @@ Current implementation slice:
 - `go-ldap/ldap/v3` adapter
 - `wordwarden ldap test`
 - HMAC canonical request verifier with active/previous key support
+- `POST /v1/auth/verify-password`
+- local structured audit events with redacted username hashing
 
-`verify-password` HTTP integration is next.
+OpenLDAP integration tests and hardening are next.
 
 ## Local Development
 

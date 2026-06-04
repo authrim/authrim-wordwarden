@@ -14,6 +14,7 @@ var (
 
 type Client interface {
 	TestConnection(ctx context.Context, request TestConnectionRequest) (TestConnectionResult, error)
+	VerifyPassword(ctx context.Context, request VerifyPasswordRequest) (VerifyPasswordResult, error)
 }
 
 type TestConnectionRequest struct {
@@ -34,4 +35,17 @@ type TestConnectionResult struct {
 type Subject struct {
 	DirectoryID string
 	Username    string
+}
+
+type VerifyPasswordRequest struct {
+	Username       string
+	Password       string
+	AttributeNames []string
+}
+
+type VerifyPasswordResult struct {
+	Success    bool
+	Reason     string
+	Subject    Subject
+	Attributes map[string][]string
 }

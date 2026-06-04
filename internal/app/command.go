@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/authrim/authrim-wordwarden/internal/adapters/auditlog"
+	hmacadapter "github.com/authrim/authrim-wordwarden/internal/adapters/hmac"
 	ldapadapter "github.com/authrim/authrim-wordwarden/internal/adapters/ldap"
 	secretsadapter "github.com/authrim/authrim-wordwarden/internal/adapters/secrets"
 	"github.com/authrim/authrim-wordwarden/internal/core/directory"
@@ -56,10 +58,14 @@ func newServeCommand(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			runtimes, err := buildTenantRuntimes(cmd.Context(), cfg)
+			if err != nil {
+				return err
+			}
 
 			server := &http.Server{
 				Addr:              cfg.Server.Listen,
-				Handler:           httpapi.NewHandler(version),
+				Handler:           httpapi.NewHandler(version, httpapi.HandlerOptions{Tenants: runtimes, Audit: auditlog.NewJSONSink(os.Stdout)}),
 				ReadHeaderTimeout: 5 * time.Second,
 			}
 
@@ -204,6 +210,65 @@ func newVersionCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func buildTenantRuntimes(ctx context.Context, cfg *config.Config) (map[string]httpapi.TenantRuntime, error) {
+	resolver := secretsadapter.NewResolver()
+	runtimes := make(map[string]httpapi.TenantRuntime, len(cfg.Tenants))
+
+	for _, tenant := range cfg.Tenants {
+		activeSecret, err := resolveSecretBytes(ctx, resolver, tenant.Authrim.HMACKeys.Active.SecretRef)
+		if err != nil {
+			return nil, fmt.Errorf("tenant %s active HMAC secret: %w", tenant.TenantID, err)
+		}
+		keySet := hmacadapter.KeySet{
+			Active: hmacadapter.Key{
+				KID:    tenant.Authrim.HMACKeys.Active.KID,
+				Secret: activeSecret,
+			},
+		}
+		if tenant.Authrim.HMACKeys.Previous != nil {
+			previousSecret, err := resolveSecretBytes(ctx, resolver, tenant.Authrim.HMACKeys.Previous.SecretRef)
+			if err != nil {
+				return nil, fmt.Errorf("tenant %s previous HMAC secret: %w", tenant.TenantID, err)
+			}
+			keySet.Previous = &hmacadapter.Key{
+				KID:    tenant.Authrim.HMACKeys.Previous.KID,
+				Secret: previousSecret,
+			}
+		}
+		auditHashSecret, err := resolveSecretBytes(ctx, resolver, tenant.Authrim.AuditHashSecretRef)
+		if err != nil {
+			return nil, fmt.Errorf("tenant %s audit hash secret: %w", tenant.TenantID, err)
+		}
+
+		bindPassword, err := resolveSecretBytes(ctx, resolver, tenant.LDAP.BindPasswordRef)
+		if err != nil {
+			return nil, fmt.Errorf("tenant %s LDAP bind password: %w", tenant.TenantID, err)
+		}
+
+		runtimes[tenant.ConnectorID] = httpapi.TenantRuntime{
+			TenantID:        tenant.TenantID,
+			ConnectorID:     tenant.ConnectorID,
+			HMACVerifier:    hmacadapter.NewVerifier(keySet),
+			Directory:       ldapadapter.NewClient(tenant.LDAP, string(bindPassword), tenant.Timeouts),
+			AuditHashSecret: auditHashSecret,
+		}
+	}
+
+	return runtimes, nil
+}
+
+func resolveSecretBytes(ctx context.Context, resolver secretsadapter.Resolver, raw string) ([]byte, error) {
+	ref, err := secrets.ParseRef(raw)
+	if err != nil {
+		return nil, err
+	}
+	value, err := resolver.ResolveSecret(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
 }
 
 func findTenant(cfg *config.Config, tenantID string) (config.TenantConfig, error) {
