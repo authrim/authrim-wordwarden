@@ -26,8 +26,10 @@ Current implementation slice:
 - local structured audit events with redacted username hashing
 - username preprocessing
 - connector concurrency protection hook
+- OpenLDAP integration fixture
 
-OpenLDAP integration tests are next.
+The guarded OpenLDAP integration test is available under
+`test/integration/openldap`.
 
 ## Local Development
 
@@ -47,6 +49,15 @@ LDAP diagnostics:
 
 ```bash
 go run ./cmd/wordwarden --config config.example.yaml ldap test --tenant tenant-a
+```
+
+OpenLDAP integration fixture:
+
+```bash
+./test/integration/openldap/generate-certs.sh
+docker compose -f test/integration/openldap/docker-compose.yml up -d
+WORDWARDEN_LDAP_INTEGRATION=1 go test ./internal/adapters/ldap -run TestOpenLDAPIntegration
+docker compose -f test/integration/openldap/docker-compose.yml down -v
 ```
 
 ## License

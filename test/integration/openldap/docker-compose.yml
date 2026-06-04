@@ -1,0 +1,19 @@
+services:
+  openldap:
+    image: osixia/openldap:1.5.0
+    container_name: authrim-wordwarden-openldap
+    command: ["--copy-service"]
+    environment:
+      LDAP_ORGANISATION: "Authrim"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "admin"
+      LDAP_TLS: "true"
+      LDAP_TLS_CRT_FILENAME: "ldap.crt"
+      LDAP_TLS_KEY_FILENAME: "ldap.key"
+      LDAP_TLS_CA_CRT_FILENAME: "ca.crt"
+    ports:
+      - "1389:389"
+      - "1636:636"
+    volumes:
+      - "./certs:/container/service/slapd/assets/certs:ro"
+      - "./ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom:ro"
