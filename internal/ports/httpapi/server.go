@@ -24,6 +24,7 @@ type TenantRuntime struct {
 	Directory        directory.Client
 	AuditHashSecret  []byte
 	ConcurrencyLimit int
+	StormProtection  StormProtectionPolicy
 }
 
 type HandlerOptions struct {
@@ -43,6 +44,7 @@ type handler struct {
 	replay  *replayCache
 	audit   audit.Sink
 	limits  map[string]chan struct{}
+	storms  map[string]*connectorStorms
 }
 
 func NewHandler(version string, options ...HandlerOptions) http.Handler {
@@ -52,6 +54,7 @@ func NewHandler(version string, options ...HandlerOptions) http.Handler {
 		replay:  newReplayCache(5 * time.Minute),
 		audit:   audit.DiscardSink{},
 		limits:  map[string]chan struct{}{},
+		storms:  map[string]*connectorStorms{},
 	}
 	if len(options) > 0 && options[0].Tenants != nil {
 		h.tenants = options[0].Tenants
@@ -65,6 +68,7 @@ func NewHandler(version string, options ...HandlerOptions) http.Handler {
 			limit = 8
 		}
 		h.limits[connectorID] = make(chan struct{}, limit)
+		h.storms[connectorID] = newConnectorStorms(runtime.StormProtection)
 	}
 
 	mux := http.NewServeMux()
@@ -136,6 +140,20 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if h.stormBlocked(connectorID, stormKindHMACFailure) {
+		h.emit(req, audit.Event{
+			EventType:   audit.EventVerifyError,
+			TenantID:    runtime.TenantID,
+			ConnectorID: runtime.ConnectorID,
+			Result:      "error",
+			ErrorCode:   "hmac_failure_storm_limited",
+			Retryable:   true,
+			LatencyMS:   latencyMS(start),
+		})
+		writeStormError(w, connectorID, "hmac_failure_storm_limited")
+		return
+	}
+
 	verification, body, err := runtime.HMACVerifier.Verify(req)
 	if err != nil {
 		h.emit(req, audit.Event{
@@ -151,6 +169,22 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			ConnectorID: connectorID,
 			Error:       errorPayload{Code: hmacErrorCode(err), Retryable: false},
 		})
+		h.recordStorm(connectorID, stormKindHMACFailure)
+		return
+	}
+	if h.stormBlocked(connectorID, stormKindReplay) {
+		h.emit(req, audit.Event{
+			EventType:   audit.EventVerifyError,
+			TenantID:    runtime.TenantID,
+			ConnectorID: runtime.ConnectorID,
+			RequestID:   verification.RequestID,
+			KeyID:       verification.KeyID,
+			Result:      "error",
+			ErrorCode:   "replay_storm_limited",
+			Retryable:   true,
+			LatencyMS:   latencyMS(start),
+		})
+		writeStormErrorWithRequest(w, verification.RequestID, connectorID, "replay_storm_limited")
 		return
 	}
 	if !h.replay.Remember(verification.RequestID + ":" + verification.Nonce) {
@@ -170,6 +204,7 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			ConnectorID: connectorID,
 			Error:       errorPayload{Code: "replay_detected", Retryable: false},
 		})
+		h.recordStorm(connectorID, stormKindReplay)
 		return
 	}
 
@@ -195,6 +230,22 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 	}
 	defer release()
 
+	if h.stormBlocked(connectorID, stormKindMalformed) {
+		h.emit(req, audit.Event{
+			EventType:   audit.EventVerifyError,
+			TenantID:    runtime.TenantID,
+			ConnectorID: runtime.ConnectorID,
+			RequestID:   verification.RequestID,
+			KeyID:       verification.KeyID,
+			Result:      "error",
+			ErrorCode:   "malformed_request_storm_limited",
+			Retryable:   true,
+			LatencyMS:   latencyMS(start),
+		})
+		writeStormErrorWithRequest(w, verification.RequestID, connectorID, "malformed_request_storm_limited")
+		return
+	}
+
 	var requestBody verifyPasswordRequest
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&requestBody); err != nil {
 		h.emit(req, audit.Event{
@@ -213,6 +264,7 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			ConnectorID: connectorID,
 			Error:       errorPayload{Code: "malformed_request", Retryable: false},
 		})
+		h.recordStorm(connectorID, stormKindMalformed)
 		return
 	}
 
@@ -235,6 +287,28 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			TenantID:    requestBody.TenantID,
 			ConnectorID: connectorID,
 			Error:       errorPayload{Code: "tenant_connector_mismatch", Retryable: false},
+		})
+		return
+	}
+
+	if h.stormBlocked(connectorID, stormKindDirectoryError) {
+		h.emit(req, audit.Event{
+			EventType:    audit.EventVerifyError,
+			TenantID:     requestBody.TenantID,
+			ConnectorID:  requestBody.ConnectorID,
+			RequestID:    requestBody.RequestID,
+			KeyID:        verification.KeyID,
+			Result:       "error",
+			ErrorCode:    "directory_error_storm_limited",
+			Retryable:    true,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: usernameHash(runtime.AuditHashSecret, requestBody.Username),
+		})
+		writeError(w, http.StatusServiceUnavailable, errorResponse{
+			RequestID:   requestBody.RequestID,
+			TenantID:    requestBody.TenantID,
+			ConnectorID: requestBody.ConnectorID,
+			Error:       errorPayload{Code: "directory_error_storm_limited", Retryable: true},
 		})
 		return
 	}
@@ -264,8 +338,10 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			ConnectorID: requestBody.ConnectorID,
 			Error:       errorPayload{Code: directoryErrorCode(err), Retryable: true},
 		})
+		h.recordStorm(connectorID, stormKindDirectoryError)
 		return
 	}
+	h.resetStorm(connectorID, stormKindDirectoryError)
 
 	if !result.Success {
 		h.emit(req, audit.Event{
@@ -334,6 +410,21 @@ func writeError(w http.ResponseWriter, status int, value errorResponse) {
 	writeJSON(w, status, value)
 }
 
+func writeStormError(w http.ResponseWriter, connectorID string, code string) {
+	writeError(w, http.StatusTooManyRequests, errorResponse{
+		ConnectorID: connectorID,
+		Error:       errorPayload{Code: code, Retryable: true},
+	})
+}
+
+func writeStormErrorWithRequest(w http.ResponseWriter, requestID string, connectorID string, code string) {
+	writeError(w, http.StatusTooManyRequests, errorResponse{
+		RequestID:   requestID,
+		ConnectorID: connectorID,
+		Error:       errorPayload{Code: code, Retryable: true},
+	})
+}
+
 func hmacErrorCode(err error) string {
 	switch {
 	case errors.Is(err, hmacadapter.ErrMissingHeader):
@@ -385,6 +476,23 @@ func (h *handler) acquire(connectorID string) (func(), bool) {
 		return func() { <-limit }, true
 	default:
 		return nil, false
+	}
+}
+
+func (h *handler) stormBlocked(connectorID string, kind stormKind) bool {
+	storms, ok := h.storms[connectorID]
+	return ok && storms.blocked(kind)
+}
+
+func (h *handler) recordStorm(connectorID string, kind stormKind) {
+	if storms, ok := h.storms[connectorID]; ok {
+		storms.record(kind)
+	}
+}
+
+func (h *handler) resetStorm(connectorID string, kind stormKind) {
+	if storms, ok := h.storms[connectorID]; ok {
+		storms.reset(kind)
 	}
 }
 

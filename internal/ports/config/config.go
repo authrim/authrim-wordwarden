@@ -101,6 +101,12 @@ type TimeoutConfig struct {
 
 type ProtectionConfig struct {
 	MaxConcurrentRequests int `yaml:"max_concurrent_requests"`
+	StormWindowMS         int `yaml:"storm_window_ms"`
+	StormBlockMS          int `yaml:"storm_block_ms"`
+	HMACFailureLimit      int `yaml:"hmac_failure_limit"`
+	MalformedRequestLimit int `yaml:"malformed_request_limit"`
+	ReplayLimit           int `yaml:"replay_limit"`
+	DirectoryErrorLimit   int `yaml:"directory_error_limit"`
 }
 
 func LoadFile(path string) (*Config, error) {
@@ -154,6 +160,24 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Tenants[i].Protection.MaxConcurrentRequests == 0 {
 			cfg.Tenants[i].Protection.MaxConcurrentRequests = 8
+		}
+		if cfg.Tenants[i].Protection.StormWindowMS == 0 {
+			cfg.Tenants[i].Protection.StormWindowMS = 10000
+		}
+		if cfg.Tenants[i].Protection.StormBlockMS == 0 {
+			cfg.Tenants[i].Protection.StormBlockMS = 30000
+		}
+		if cfg.Tenants[i].Protection.HMACFailureLimit == 0 {
+			cfg.Tenants[i].Protection.HMACFailureLimit = 30
+		}
+		if cfg.Tenants[i].Protection.MalformedRequestLimit == 0 {
+			cfg.Tenants[i].Protection.MalformedRequestLimit = 20
+		}
+		if cfg.Tenants[i].Protection.ReplayLimit == 0 {
+			cfg.Tenants[i].Protection.ReplayLimit = 10
+		}
+		if cfg.Tenants[i].Protection.DirectoryErrorLimit == 0 {
+			cfg.Tenants[i].Protection.DirectoryErrorLimit = 5
 		}
 	}
 }
@@ -218,12 +242,34 @@ func Validate(cfg *Config) error {
 		if tenant.Protection.MaxConcurrentRequests <= 0 {
 			problems = append(problems, prefix+".protection.max_concurrent_requests must be positive")
 		}
+		validateProtection(&problems, prefix+".protection", tenant.Protection)
 	}
 
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "\n"))
 	}
 	return nil
+}
+
+func validateProtection(problems *[]string, prefix string, protection ProtectionConfig) {
+	if protection.StormWindowMS <= 0 {
+		*problems = append(*problems, prefix+".storm_window_ms must be positive")
+	}
+	if protection.StormBlockMS <= 0 {
+		*problems = append(*problems, prefix+".storm_block_ms must be positive")
+	}
+	if protection.HMACFailureLimit <= 0 {
+		*problems = append(*problems, prefix+".hmac_failure_limit must be positive")
+	}
+	if protection.MalformedRequestLimit <= 0 {
+		*problems = append(*problems, prefix+".malformed_request_limit must be positive")
+	}
+	if protection.ReplayLimit <= 0 {
+		*problems = append(*problems, prefix+".replay_limit must be positive")
+	}
+	if protection.DirectoryErrorLimit <= 0 {
+		*problems = append(*problems, prefix+".directory_error_limit must be positive")
+	}
 }
 
 func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -221,6 +222,107 @@ func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
 	wg.Wait()
 }
 
+func TestVerifyPasswordLimitsHMACFailureStorm(t *testing.T) {
+	handler := newTestHandlerWithRuntime(TenantRuntime{
+		TenantID:        "tenant-a",
+		ConnectorID:     "ww_tenant_a",
+		HMACVerifier:    testVerifier(),
+		Directory:       fakeDirectory{},
+		AuditHashSecret: []byte("audit-secret"),
+		StormProtection: StormProtectionPolicy{
+			HMACFailureLimit: 1,
+			WindowMS:         60000,
+			BlockMS:          60000,
+		},
+	})
+
+	badReq := signedVerifyPasswordRequest(t, `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`, "nonce_123", []byte("wrong-secret"))
+	badRec := httptest.NewRecorder()
+	handler.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad signature status = %d body = %s", badRec.Code, badRec.Body.String())
+	}
+
+	goodBody := `{
+		"request_id":"req_456",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`
+	goodReq := signedVerifyPasswordRequestWithID(t, goodBody, "req_456", "nonce_456", []byte("active-secret"))
+	goodRec := httptest.NewRecorder()
+	handler.ServeHTTP(goodRec, goodReq)
+	if goodRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("storm status = %d body = %s", goodRec.Code, goodRec.Body.String())
+	}
+
+	var body errorResponse
+	if err := json.Unmarshal(goodRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if body.Error.Code != "hmac_failure_storm_limited" || !body.Error.Retryable {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestVerifyPasswordLimitsDirectoryErrorStorm(t *testing.T) {
+	handler := newTestHandlerWithRuntime(TenantRuntime{
+		TenantID:        "tenant-a",
+		ConnectorID:     "ww_tenant_a",
+		HMACVerifier:    testVerifier(),
+		Directory:       errorDirectory{err: directory.ErrDirectoryUnavailable},
+		AuditHashSecret: []byte("audit-secret"),
+		StormProtection: StormProtectionPolicy{
+			DirectoryErrorLimit: 1,
+			WindowMS:            60000,
+			BlockMS:             60000,
+		},
+	})
+
+	firstBody := `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`
+	firstReq := signedVerifyPasswordRequestWithID(t, firstBody, "req_123", "nonce_123", []byte("active-secret"))
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first status = %d body = %s", firstRec.Code, firstRec.Body.String())
+	}
+
+	secondBody := `{
+		"request_id":"req_456",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`
+	secondReq := signedVerifyPasswordRequestWithID(t, secondBody, "req_456", "nonce_456", []byte("active-secret"))
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("second status = %d body = %s", secondRec.Code, secondRec.Body.String())
+	}
+
+	var body errorResponse
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if body.Error.Code != "directory_error_storm_limited" || !body.Error.Retryable {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func newTestHandler() http.Handler {
 	return newTestHandlerWithAudit(audit.DiscardSink{})
 }
@@ -255,13 +357,17 @@ func testVerifier() hmacadapter.Verifier {
 }
 
 func signedVerifyPasswordRequest(t *testing.T, body string, nonce string, secret []byte) *http.Request {
+	return signedVerifyPasswordRequestWithID(t, body, "req_123", nonce, secret)
+}
+
+func signedVerifyPasswordRequestWithID(t *testing.T, body string, requestID string, nonce string, secret []byte) *http.Request {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify-password", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(hmacadapter.HeaderConnectorID, "ww_tenant_a")
 	req.Header.Set(hmacadapter.HeaderKeyID, "kid-active")
-	req.Header.Set(hmacadapter.HeaderRequestID, "req_123")
+	req.Header.Set(hmacadapter.HeaderRequestID, requestID)
 	req.Header.Set(hmacadapter.HeaderTimestamp, fixedHMACTime().Format(time.RFC3339))
 	req.Header.Set(hmacadapter.HeaderNonce, nonce)
 	req.Header.Set(hmacadapter.HeaderSignedHeaders, "content-type;x-authrim-connector-id;x-authrim-key-id;x-authrim-request-id;x-authrim-timestamp;x-authrim-nonce")
@@ -308,6 +414,21 @@ func (d blockingDirectory) VerifyPassword(context.Context, directory.VerifyPassw
 	close(d.started)
 	<-d.release
 	return directory.VerifyPasswordResult{Success: true}, nil
+}
+
+type errorDirectory struct {
+	err error
+}
+
+func (errorDirectory) TestConnection(context.Context, directory.TestConnectionRequest) (directory.TestConnectionResult, error) {
+	return directory.TestConnectionResult{}, nil
+}
+
+func (d errorDirectory) VerifyPassword(context.Context, directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
+	if d.err == nil {
+		return directory.VerifyPasswordResult{}, errors.New("directory error")
+	}
+	return directory.VerifyPasswordResult{}, d.err
 }
 
 type memoryAuditSink struct {

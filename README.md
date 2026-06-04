@@ -27,6 +27,7 @@ Current implementation slice:
 - local structured audit events with redacted username hashing
 - username preprocessing
 - connector concurrency protection hook
+- connector storm protection for HMAC failures, malformed/replayed requests, and directory errors
 - OpenLDAP integration fixture
 
 The guarded OpenLDAP integration test is available under

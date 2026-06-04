@@ -53,6 +53,9 @@ func TestParseValidConfig(t *testing.T) {
 	if cfg.Tenants[0].Timeouts.RequestMS != 2500 {
 		t.Fatalf("default request timeout = %d", cfg.Tenants[0].Timeouts.RequestMS)
 	}
+	if cfg.Tenants[0].Protection.HMACFailureLimit != 30 {
+		t.Fatalf("default hmac failure limit = %d", cfg.Tenants[0].Protection.HMACFailureLimit)
+	}
 }
 
 func TestParseRejectsUnknownField(t *testing.T) {
@@ -138,6 +141,27 @@ func TestParseAllowsDirectBindWithoutServiceBind(t *testing.T) {
 
 	_, err := Parse([]byte(raw))
 	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsInvalidProtectionLimit(t *testing.T) {
+	raw := validConfig + `
+    protection:
+      max_concurrent_requests: 8
+      storm_window_ms: 10000
+      storm_block_ms: 30000
+      hmac_failure_limit: -1
+      malformed_request_limit: 20
+      replay_limit: 10
+      directory_error_limit: 5
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want protection error")
+	}
+	if !strings.Contains(err.Error(), "protection.hmac_failure_limit must be positive") {
 		t.Fatalf("Parse() error = %v", err)
 	}
 }

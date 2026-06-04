@@ -60,3 +60,9 @@ tenants:
       request_ms: 2500
     protection:
       max_concurrent_requests: 8
+      storm_window_ms: 10000
+      storm_block_ms: 30000
+      hmac_failure_limit: 30
+      malformed_request_limit: 20
+      replay_limit: 10
+      directory_error_limit: 5
