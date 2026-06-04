@@ -18,6 +18,12 @@ Required headers:
 - `X-Authrim-Signed-Headers`: semicolon-separated signed header names
 - `X-Authrim-Signature`: lowercase hex HMAC-SHA256 signature
 
+`X-Authrim-Signed-Headers` must include `content-type`,
+`x-authrim-connector-id`, `x-authrim-key-id`, `x-authrim-request-id`,
+`x-authrim-timestamp`, and `x-authrim-nonce`. Wordwarden lowercases,
+deduplicates, and sorts the signed header names before verifying the signature.
+Each signed header must appear exactly once on the request.
+
 Canonical request:
 
 ```text
@@ -27,9 +33,16 @@ AUTHRIM-HMAC-SHA256
 <method>
 <escaped-path>
 <canonical-query>
+<canonical-headers>
 <signed-headers>
 <sha256-body-hex>
 ```
+
+`<canonical-headers>` is one line per signed header, sorted by lowercase header
+name, in the form `<name>:<value>`. Header values are trimmed and internal
+whitespace is collapsed to a single space. This binds the connector id, key id,
+request id, timestamp, nonce, and content type to the signature, not just the
+JSON body.
 
 The HMAC secret is tenant/connector scoped. Wordwarden accepts the configured
 active key and, if present, one previous key for rotation.
@@ -95,11 +108,14 @@ errors.
 | HTTP | Code | Retryable |
 | --- | --- | --- |
 | 400 | `malformed_request` | false |
+| 401 | `unsigned_required_hmac_header` | false |
+| 401 | `malformed_signed_header` | false |
 | 401 | `missing_hmac_header` | false |
 | 401 | `invalid_hmac_timestamp` | false |
 | 401 | `stale_hmac_timestamp` | false |
 | 401 | `unknown_hmac_key` | false |
 | 401 | `invalid_hmac_signature` | false |
+| 413 | `payload_too_large` | false |
 | 403 | `unknown_connector` | false |
 | 403 | `tenant_connector_mismatch` | false |
 | 409 | `replay_detected` | false |

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,113 @@ func TestVerifyPasswordRejectsBadSignature(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVerifyPasswordRejectsUnknownJSONField(t *testing.T) {
+	req := signedVerifyPasswordRequest(t, `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct",
+		"unexpected":true
+	}`, "nonce_123", []byte("active-secret"))
+	directory := &countingDirectory{}
+	handler := newTestHandlerWithRuntime(TenantRuntime{
+		TenantID:        "tenant-a",
+		ConnectorID:     "ww_tenant_a",
+		HMACVerifier:    testVerifier(),
+		Directory:       directory,
+		AuditHashSecret: []byte("audit-secret"),
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if directory.calls != 0 {
+		t.Fatalf("directory calls = %d, want 0", directory.calls)
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "malformed_request")
+}
+
+func TestVerifyPasswordRejectsEmptyPasswordBeforeDirectory(t *testing.T) {
+	req := signedVerifyPasswordRequest(t, `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":""
+	}`, "nonce_123", []byte("active-secret"))
+	directory := &countingDirectory{}
+	handler := newTestHandlerWithRuntime(TenantRuntime{
+		TenantID:        "tenant-a",
+		ConnectorID:     "ww_tenant_a",
+		HMACVerifier:    testVerifier(),
+		Directory:       directory,
+		AuditHashSecret: []byte("audit-secret"),
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if directory.calls != 0 {
+		t.Fatalf("directory calls = %d, want 0", directory.calls)
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "malformed_request")
+}
+
+func TestVerifyPasswordRejectsOversizedBody(t *testing.T) {
+	body := `{"request_id":"req_123","tenant_id":"tenant-a","connector_id":"ww_tenant_a","username":"alice","password":"` +
+		strings.Repeat("a", maxVerifyPasswordBodyBytes) + `"}`
+	req := signedVerifyPasswordRequest(t, body, "nonce_123", []byte("active-secret"))
+
+	rec := httptest.NewRecorder()
+	newTestHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "payload_too_large")
+}
+
+func TestVerifyPasswordUsesConfiguredRequestTimeout(t *testing.T) {
+	deadline := make(chan time.Time, 1)
+	handler := newTestHandlerWithRuntime(TenantRuntime{
+		TenantID:         "tenant-a",
+		ConnectorID:      "ww_tenant_a",
+		HMACVerifier:     testVerifier(),
+		Directory:        deadlineDirectory{deadline: deadline},
+		AuditHashSecret:  []byte("audit-secret"),
+		RequestTimeoutMS: 25,
+	})
+	req := signedVerifyPasswordRequest(t, `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`, "nonce_123", []byte("active-secret"))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	got := <-deadline
+	if got.IsZero() {
+		t.Fatal("directory context deadline is not set")
+	}
+	remaining := time.Until(got)
+	if remaining <= 0 || remaining > time.Second {
+		t.Fatalf("deadline remaining = %s, want a short positive timeout", remaining)
 	}
 }
 
@@ -323,6 +431,18 @@ func TestVerifyPasswordLimitsDirectoryErrorStorm(t *testing.T) {
 	}
 }
 
+func assertErrorCode(t *testing.T, raw []byte, want string) {
+	t.Helper()
+
+	var body errorResponse
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if body.Error.Code != want {
+		t.Fatalf("error code = %q, want %q", body.Error.Code, want)
+	}
+}
+
 func newTestHandler() http.Handler {
 	return newTestHandlerWithAudit(audit.DiscardSink{})
 }
@@ -429,6 +549,33 @@ func (d errorDirectory) VerifyPassword(context.Context, directory.VerifyPassword
 		return directory.VerifyPasswordResult{}, errors.New("directory error")
 	}
 	return directory.VerifyPasswordResult{}, d.err
+}
+
+type countingDirectory struct {
+	calls int
+}
+
+func (*countingDirectory) TestConnection(context.Context, directory.TestConnectionRequest) (directory.TestConnectionResult, error) {
+	return directory.TestConnectionResult{}, nil
+}
+
+func (d *countingDirectory) VerifyPassword(context.Context, directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
+	d.calls++
+	return directory.VerifyPasswordResult{Success: true}, nil
+}
+
+type deadlineDirectory struct {
+	deadline chan time.Time
+}
+
+func (deadlineDirectory) TestConnection(context.Context, directory.TestConnectionRequest) (directory.TestConnectionResult, error) {
+	return directory.TestConnectionResult{}, nil
+}
+
+func (d deadlineDirectory) VerifyPassword(ctx context.Context, _ directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
+	deadline, _ := ctx.Deadline()
+	d.deadline <- deadline
+	return directory.VerifyPasswordResult{Success: true}, nil
 }
 
 type memoryAuditSink struct {

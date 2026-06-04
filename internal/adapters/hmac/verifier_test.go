@@ -2,6 +2,7 @@ package hmacadapter
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -52,6 +53,48 @@ func TestVerifierRejectsBadSignature(t *testing.T) {
 
 	if _, _, err := verifier.Verify(req); err != ErrInvalidSignature {
 		t.Fatalf("Verify() error = %v, want %v", err, ErrInvalidSignature)
+	}
+}
+
+func TestVerifierRejectsSignedHeaderTampering(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	req := signedRequest(t, "kid-active", []byte("active-secret"), now)
+	req.Header.Set(HeaderRequestID, "req_tampered")
+
+	verifier := NewVerifier(KeySet{
+		Active: Key{KID: "kid-active", Secret: []byte("active-secret")},
+	}).WithClock(func() time.Time { return now })
+
+	if _, _, err := verifier.Verify(req); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("Verify() error = %v, want %v", err, ErrInvalidSignature)
+	}
+}
+
+func TestVerifierRejectsUnsignedRequiredHeader(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	req := signedRequest(t, "kid-active", []byte("active-secret"), now)
+	req.Header.Set(HeaderSignedHeaders, "content-type;x-authrim-connector-id;x-authrim-key-id;x-authrim-timestamp;x-authrim-nonce")
+
+	verifier := NewVerifier(KeySet{
+		Active: Key{KID: "kid-active", Secret: []byte("active-secret")},
+	}).WithClock(func() time.Time { return now })
+
+	if _, _, err := verifier.Verify(req); !errors.Is(err, ErrUnsignedHeader) {
+		t.Fatalf("Verify() error = %v, want %v", err, ErrUnsignedHeader)
+	}
+}
+
+func TestVerifierRejectsDuplicateSignedHeaderValue(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	req := signedRequest(t, "kid-active", []byte("active-secret"), now)
+	req.Header.Add(HeaderRequestID, "req_456")
+
+	verifier := NewVerifier(KeySet{
+		Active: Key{KID: "kid-active", Secret: []byte("active-secret")},
+	}).WithClock(func() time.Time { return now })
+
+	if _, _, err := verifier.Verify(req); !errors.Is(err, ErrMalformedSignedField) {
+		t.Fatalf("Verify() error = %v, want %v", err, ErrMalformedSignedField)
 	}
 }
 

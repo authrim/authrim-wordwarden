@@ -257,6 +257,7 @@ func buildTenantRuntimes(ctx context.Context, cfg *config.Config) (map[string]ht
 			Directory:        ldapadapter.NewClient(tenant.LDAP, string(bindPassword), tenant.Timeouts),
 			AuditHashSecret:  auditHashSecret,
 			ConcurrencyLimit: tenant.Protection.MaxConcurrentRequests,
+			RequestTimeoutMS: tenant.Timeouts.RequestMS,
 			StormProtection: httpapi.StormProtectionPolicy{
 				WindowMS:              tenant.Protection.StormWindowMS,
 				BlockMS:               tenant.Protection.StormBlockMS,

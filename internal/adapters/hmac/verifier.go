@@ -28,11 +28,13 @@ const (
 )
 
 var (
-	ErrMissingHeader    = errors.New("missing_hmac_header")
-	ErrInvalidTimestamp = errors.New("invalid_hmac_timestamp")
-	ErrStaleTimestamp   = errors.New("stale_hmac_timestamp")
-	ErrUnknownKey       = errors.New("unknown_hmac_key")
-	ErrInvalidSignature = errors.New("invalid_hmac_signature")
+	ErrMissingHeader        = errors.New("missing_hmac_header")
+	ErrUnsignedHeader       = errors.New("unsigned_required_hmac_header")
+	ErrInvalidTimestamp     = errors.New("invalid_hmac_timestamp")
+	ErrStaleTimestamp       = errors.New("stale_hmac_timestamp")
+	ErrUnknownKey           = errors.New("unknown_hmac_key")
+	ErrInvalidSignature     = errors.New("invalid_hmac_signature")
+	ErrMalformedSignedField = errors.New("malformed_signed_header")
 )
 
 type Key struct {
@@ -136,38 +138,101 @@ type hmacHeaders struct {
 }
 
 func requiredHeaders(req *http.Request) (hmacHeaders, error) {
-	values := hmacHeaders{
-		connectorID: strings.TrimSpace(req.Header.Get(HeaderConnectorID)),
-		keyID:       strings.TrimSpace(req.Header.Get(HeaderKeyID)),
-		requestID:   strings.TrimSpace(req.Header.Get(HeaderRequestID)),
-		timestamp:   strings.TrimSpace(req.Header.Get(HeaderTimestamp)),
-		nonce:       strings.TrimSpace(req.Header.Get(HeaderNonce)),
-		signature:   strings.TrimSpace(req.Header.Get(HeaderSignature)),
+	connectorID, err := singleHeaderValue(req, HeaderConnectorID)
+	if err != nil {
+		return hmacHeaders{}, err
 	}
-	rawSignedHeaders := strings.TrimSpace(req.Header.Get(HeaderSignedHeaders))
+	keyID, err := singleHeaderValue(req, HeaderKeyID)
+	if err != nil {
+		return hmacHeaders{}, err
+	}
+	requestID, err := singleHeaderValue(req, HeaderRequestID)
+	if err != nil {
+		return hmacHeaders{}, err
+	}
+	timestamp, err := singleHeaderValue(req, HeaderTimestamp)
+	if err != nil {
+		return hmacHeaders{}, err
+	}
+	nonce, err := singleHeaderValue(req, HeaderNonce)
+	if err != nil {
+		return hmacHeaders{}, err
+	}
+	rawSignedHeaders, err := singleHeaderValue(req, HeaderSignedHeaders)
+	if err != nil {
+		return hmacHeaders{}, err
+	}
+	signature, err := singleHeaderValue(req, HeaderSignature)
+	if err != nil {
+		return hmacHeaders{}, err
+	}
+
+	values := hmacHeaders{
+		connectorID: strings.TrimSpace(connectorID),
+		keyID:       strings.TrimSpace(keyID),
+		requestID:   strings.TrimSpace(requestID),
+		timestamp:   strings.TrimSpace(timestamp),
+		nonce:       strings.TrimSpace(nonce),
+		signature:   strings.TrimSpace(signature),
+	}
+	rawSignedHeaders = strings.TrimSpace(rawSignedHeaders)
 	if values.connectorID == "" || values.keyID == "" || values.requestID == "" ||
 		values.timestamp == "" || values.nonce == "" || rawSignedHeaders == "" || values.signature == "" {
 		return hmacHeaders{}, ErrMissingHeader
 	}
 	values.signedHeaders = parseSignedHeaders(rawSignedHeaders)
+	if !containsRequiredSignedHeaders(values.signedHeaders) {
+		return hmacHeaders{}, ErrUnsignedHeader
+	}
 	return values, nil
 }
 
 func parseSignedHeaders(raw string) []string {
 	parts := strings.Split(raw, ";")
 	headers := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
 	for _, part := range parts {
 		name := strings.ToLower(strings.TrimSpace(part))
-		if name != "" {
-			headers = append(headers, name)
+		if name == "" {
+			continue
 		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		headers = append(headers, name)
 	}
 	sort.Strings(headers)
 	return headers
 }
 
+func containsRequiredSignedHeaders(headers []string) bool {
+	required := []string{
+		"content-type",
+		strings.ToLower(HeaderConnectorID),
+		strings.ToLower(HeaderKeyID),
+		strings.ToLower(HeaderRequestID),
+		strings.ToLower(HeaderTimestamp),
+		strings.ToLower(HeaderNonce),
+	}
+	seen := make(map[string]struct{}, len(headers))
+	for _, header := range headers {
+		seen[header] = struct{}{}
+	}
+	for _, header := range required {
+		if _, ok := seen[header]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func CanonicalRequest(req *http.Request, body []byte, signedHeaders []string, timestamp string, nonce string) (string, error) {
 	bodyHash := sha256.Sum256(body)
+	canonicalHeaders, err := canonicalHeaders(req, signedHeaders)
+	if err != nil {
+		return "", err
+	}
 	lines := []string{
 		Algorithm,
 		timestamp,
@@ -175,10 +240,48 @@ func CanonicalRequest(req *http.Request, body []byte, signedHeaders []string, ti
 		req.Method,
 		req.URL.EscapedPath(),
 		canonicalQuery(req.URL.Query()),
+		canonicalHeaders,
 		strings.Join(signedHeaders, ";"),
 		hex.EncodeToString(bodyHash[:]),
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func canonicalHeaders(req *http.Request, signedHeaders []string) (string, error) {
+	lines := make([]string, 0, len(signedHeaders))
+	for _, name := range signedHeaders {
+		if strings.ContainsAny(name, ":\r\n") {
+			return "", ErrMalformedSignedField
+		}
+		value, err := singleHeaderValue(req, name)
+		if err != nil {
+			return "", err
+		}
+		if value == "" {
+			return "", ErrMissingHeader
+		}
+		normalized := normalizeHeaderValue(value)
+		if normalized == "" {
+			return "", ErrMissingHeader
+		}
+		lines = append(lines, name+":"+normalized)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func singleHeaderValue(req *http.Request, name string) (string, error) {
+	values := req.Header.Values(name)
+	if len(values) == 0 {
+		return "", ErrMissingHeader
+	}
+	if len(values) > 1 {
+		return "", ErrMalformedSignedField
+	}
+	return values[0], nil
+}
+
+func normalizeHeaderValue(value string) string {
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func SignCanonical(canonical string, secret []byte) string {

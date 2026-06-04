@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ type TenantRuntime struct {
 	Directory        directory.Client
 	AuditHashSecret  []byte
 	ConcurrencyLimit int
+	RequestTimeoutMS int
 	StormProtection  StormProtectionPolicy
 }
 
@@ -120,6 +123,8 @@ type errorPayload struct {
 	Retryable bool   `json:"retryable"`
 }
 
+const maxVerifyPasswordBodyBytes = 64 * 1024
+
 func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
 	connectorID := req.Header.Get(hmacadapter.HeaderConnectorID)
@@ -154,8 +159,26 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	req.Body = http.MaxBytesReader(w, req.Body, maxVerifyPasswordBodyBytes)
 	verification, body, err := runtime.HMACVerifier.Verify(req)
 	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			h.emit(req, audit.Event{
+				EventType:   audit.EventVerifyError,
+				TenantID:    runtime.TenantID,
+				ConnectorID: runtime.ConnectorID,
+				Result:      "error",
+				ErrorCode:   "payload_too_large",
+				Retryable:   false,
+				LatencyMS:   latencyMS(start),
+			})
+			writeError(w, http.StatusRequestEntityTooLarge, errorResponse{
+				ConnectorID: connectorID,
+				Error:       errorPayload{Code: "payload_too_large", Retryable: false},
+			})
+			return
+		}
 		h.emit(req, audit.Event{
 			EventType:   audit.EventHMACFailure,
 			TenantID:    runtime.TenantID,
@@ -247,24 +270,18 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var requestBody verifyPasswordRequest
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&requestBody); err != nil {
-		h.emit(req, audit.Event{
-			EventType:   audit.EventVerifyError,
-			TenantID:    runtime.TenantID,
-			ConnectorID: runtime.ConnectorID,
-			RequestID:   verification.RequestID,
-			KeyID:       verification.KeyID,
-			Result:      "error",
-			ErrorCode:   "malformed_request",
-			Retryable:   false,
-			LatencyMS:   latencyMS(start),
-		})
-		writeError(w, http.StatusBadRequest, errorResponse{
-			RequestID:   verification.RequestID,
-			ConnectorID: connectorID,
-			Error:       errorPayload{Code: "malformed_request", Retryable: false},
-		})
-		h.recordStorm(connectorID, stormKindMalformed)
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&requestBody); err != nil {
+		h.writeMalformedRequest(w, req, runtime, verification, connectorID, start)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		h.writeMalformedRequest(w, req, runtime, verification, connectorID, start)
+		return
+	}
+	if !validVerifyPasswordRequest(requestBody) {
+		h.writeMalformedRequest(w, req, runtime, verification, connectorID, start)
 		return
 	}
 
@@ -313,7 +330,9 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	result, err := runtime.Directory.VerifyPassword(req.Context(), directory.VerifyPasswordRequest{
+	directoryCtx, cancel := context.WithTimeout(req.Context(), durationFromMS(runtime.RequestTimeoutMS, 2500*time.Millisecond))
+	defer cancel()
+	result, err := runtime.Directory.VerifyPassword(directoryCtx, directory.VerifyPasswordRequest{
 		Username:       requestBody.Username,
 		Password:       requestBody.Password,
 		AttributeNames: requestBody.AttributeNames,
@@ -394,6 +413,41 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+func (h *handler) writeMalformedRequest(
+	w http.ResponseWriter,
+	req *http.Request,
+	runtime TenantRuntime,
+	verification hmacadapter.VerificationResult,
+	connectorID string,
+	start time.Time,
+) {
+	h.emit(req, audit.Event{
+		EventType:   audit.EventVerifyError,
+		TenantID:    runtime.TenantID,
+		ConnectorID: runtime.ConnectorID,
+		RequestID:   verification.RequestID,
+		KeyID:       verification.KeyID,
+		Result:      "error",
+		ErrorCode:   "malformed_request",
+		Retryable:   false,
+		LatencyMS:   latencyMS(start),
+	})
+	writeError(w, http.StatusBadRequest, errorResponse{
+		RequestID:   verification.RequestID,
+		ConnectorID: connectorID,
+		Error:       errorPayload{Code: "malformed_request", Retryable: false},
+	})
+	h.recordStorm(connectorID, stormKindMalformed)
+}
+
+func validVerifyPasswordRequest(request verifyPasswordRequest) bool {
+	return request.RequestID != "" &&
+		request.TenantID != "" &&
+		request.ConnectorID != "" &&
+		request.Username != "" &&
+		request.Password != ""
+}
+
 func (h *handler) emit(req *http.Request, event audit.Event) {
 	event.EventID = uuid.NewString()
 	event.Timestamp = time.Now().UTC()
@@ -429,6 +483,8 @@ func hmacErrorCode(err error) string {
 	switch {
 	case errors.Is(err, hmacadapter.ErrMissingHeader):
 		return "missing_hmac_header"
+	case errors.Is(err, hmacadapter.ErrUnsignedHeader):
+		return "unsigned_required_hmac_header"
 	case errors.Is(err, hmacadapter.ErrInvalidTimestamp):
 		return "invalid_hmac_timestamp"
 	case errors.Is(err, hmacadapter.ErrStaleTimestamp):
@@ -437,9 +493,18 @@ func hmacErrorCode(err error) string {
 		return "unknown_hmac_key"
 	case errors.Is(err, hmacadapter.ErrInvalidSignature):
 		return "invalid_hmac_signature"
+	case errors.Is(err, hmacadapter.ErrMalformedSignedField):
+		return "malformed_signed_header"
 	default:
 		return "hmac_verification_failed"
 	}
+}
+
+func durationFromMS(value int, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return time.Duration(value) * time.Millisecond
 }
 
 func directoryErrorCode(err error) string {

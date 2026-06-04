@@ -43,7 +43,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 
 	if request.Username == "" {
 		if c.serviceSearchAvailable() {
-			if err := c.bindService(conn); err != nil {
+			if err := c.bindService(ctx, conn); err != nil {
 				return directory.TestConnectionResult{}, err
 			}
 			result.ServiceBound = true
@@ -58,12 +58,12 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 
 	switch c.lookupMode() {
 	case "search_then_bind":
-		if err := c.bindService(conn); err != nil {
+		if err := c.bindService(ctx, conn); err != nil {
 			return directory.TestConnectionResult{}, err
 		}
 		result.ServiceBound = true
 
-		userDN, err := c.resolveUser(conn, processed.Value)
+		userDN, err := c.resolveUser(ctx, conn, processed.Value)
 		if err != nil {
 			return result, err
 		}
@@ -74,7 +74,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 		}
 
 		if request.TestPassword {
-			if err := c.bindUser(conn, userDN, request.Password); err != nil {
+			if err := c.bindUser(ctx, conn, userDN, request.Password); err != nil {
 				return result, err
 			}
 			result.PasswordOK = true
@@ -88,7 +88,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 		}
 
 		if request.TestPassword {
-			if err := c.bindUser(conn, userDN, request.Password); err != nil {
+			if err := c.bindUser(ctx, conn, userDN, request.Password); err != nil {
 				return result, err
 			}
 			result.PasswordOK = true
@@ -101,7 +101,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 		}
 
 		if request.TestPassword {
-			if err := c.bindUser(conn, processed.Value, request.Password); err != nil {
+			if err := c.bindUser(ctx, conn, processed.Value, request.Password); err != nil {
 				return result, err
 			}
 			result.PasswordOK = true
@@ -114,11 +114,12 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 }
 
 func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
-	conn, err := c.dial(ctx, false)
-	if err != nil {
-		return directory.VerifyPasswordResult{}, err
+	if request.Password == "" {
+		return directory.VerifyPasswordResult{
+			Success: false,
+			Reason:  "invalid_credentials",
+		}, nil
 	}
-	defer conn.Close()
 
 	processed, err := usernamecore.Preprocess(request.Username, c.config.Username)
 	if err != nil {
@@ -128,13 +129,19 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		}, nil
 	}
 
+	conn, err := c.dial(ctx, false)
+	if err != nil {
+		return directory.VerifyPasswordResult{}, err
+	}
+	defer conn.Close()
+
 	switch c.lookupMode() {
 	case "search_then_bind":
-		if err := c.bindService(conn); err != nil {
+		if err := c.bindService(ctx, conn); err != nil {
 			return directory.VerifyPasswordResult{}, err
 		}
 
-		user, err := c.resolveUserWithAttributes(conn, processed.Value, request.AttributeNames)
+		user, err := c.resolveUserWithAttributes(ctx, conn, processed.Value, request.AttributeNames)
 		if err != nil {
 			if err == directory.ErrUserNotFound {
 				return directory.VerifyPasswordResult{
@@ -145,7 +152,7 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 			return directory.VerifyPasswordResult{}, err
 		}
 
-		if err := c.bindUser(conn, user.dn, request.Password); err != nil {
+		if err := c.bindUser(ctx, conn, user.dn, request.Password); err != nil {
 			if err == directory.ErrInvalidCredentials {
 				return directory.VerifyPasswordResult{
 					Success: false,
@@ -165,7 +172,7 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		}, nil
 	case "dn_template":
 		userDN := c.userDNFromTemplate(processed.Value)
-		if err := c.bindUser(conn, userDN, request.Password); err != nil {
+		if err := c.bindUser(ctx, conn, userDN, request.Password); err != nil {
 			if err == directory.ErrInvalidCredentials {
 				return directory.VerifyPasswordResult{
 					Success: false,
@@ -175,7 +182,7 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 			return directory.VerifyPasswordResult{}, err
 		}
 
-		attributes, err := c.resolveAttributesAfterSuccessfulBind(conn, userDN, processed.Value, request.AttributeNames)
+		attributes, err := c.resolveAttributesAfterSuccessfulBind(ctx, conn, userDN, processed.Value, request.AttributeNames)
 		if err != nil {
 			return directory.VerifyPasswordResult{}, err
 		}
@@ -189,7 +196,7 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 			Attributes: attributes,
 		}, nil
 	case "direct_bind":
-		if err := c.bindUser(conn, processed.Value, request.Password); err != nil {
+		if err := c.bindUser(ctx, conn, processed.Value, request.Password); err != nil {
 			if err == directory.ErrInvalidCredentials {
 				return directory.VerifyPasswordResult{
 					Success: false,
@@ -199,7 +206,7 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 			return directory.VerifyPasswordResult{}, err
 		}
 
-		attributes, directoryID, err := c.resolveDirectBindAttributes(conn, processed.Value, request.AttributeNames)
+		attributes, directoryID, err := c.resolveDirectBindAttributes(ctx, conn, processed.Value, request.AttributeNames)
 		if err != nil {
 			return directory.VerifyPasswordResult{}, err
 		}
@@ -217,14 +224,23 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 	}
 }
 
-func (c Client) bindService(conn *ldap.Conn) error {
+func (c Client) bindService(ctx context.Context, conn *ldap.Conn) error {
+	if _, err := c.setOperationTimeout(ctx, conn, c.timeouts.LDAPBindMS, 1500*time.Millisecond); err != nil {
+		return err
+	}
 	if err := conn.Bind(c.config.BindDN, c.bindPassword); err != nil {
 		return normalizeLDAPError(err)
 	}
 	return nil
 }
 
-func (c Client) bindUser(conn *ldap.Conn, bindName string, password string) error {
+func (c Client) bindUser(ctx context.Context, conn *ldap.Conn, bindName string, password string) error {
+	if password == "" {
+		return directory.ErrInvalidCredentials
+	}
+	if _, err := c.setOperationTimeout(ctx, conn, c.timeouts.LDAPBindMS, 1500*time.Millisecond); err != nil {
+		return err
+	}
 	if err := conn.Bind(bindName, password); err != nil {
 		return normalizeLDAPError(err)
 	}
@@ -249,17 +265,17 @@ func (c Client) userDNFromTemplate(username string) string {
 	return strings.ReplaceAll(c.config.DNTemplate, "{username}", ldap.EscapeDN(username))
 }
 
-func (c Client) resolveAttributesAfterSuccessfulBind(conn *ldap.Conn, userDN string, username string, requested []string) (map[string][]string, error) {
+func (c Client) resolveAttributesAfterSuccessfulBind(ctx context.Context, conn *ldap.Conn, userDN string, username string, requested []string) (map[string][]string, error) {
 	searchAttributes := requestedAttributes(requested, c.config.Attributes)
 	if len(searchAttributes) == 0 || !c.serviceSearchAvailable() {
 		return nil, nil
 	}
 
-	if err := c.bindService(conn); err != nil {
+	if err := c.bindService(ctx, conn); err != nil {
 		return nil, err
 	}
 
-	attributes, err := c.resolveAttributesByDN(conn, userDN, searchAttributes)
+	attributes, err := c.resolveAttributesByDN(ctx, conn, userDN, searchAttributes)
 	if err == nil {
 		return attributes, nil
 	}
@@ -267,7 +283,7 @@ func (c Client) resolveAttributesAfterSuccessfulBind(conn *ldap.Conn, userDN str
 		return nil, err
 	}
 
-	user, err := c.resolveUserWithAttributes(conn, username, requested)
+	user, err := c.resolveUserWithAttributes(ctx, conn, username, requested)
 	if err == directory.ErrUserNotFound {
 		return nil, nil
 	}
@@ -277,17 +293,17 @@ func (c Client) resolveAttributesAfterSuccessfulBind(conn *ldap.Conn, userDN str
 	return user.attributes, nil
 }
 
-func (c Client) resolveDirectBindAttributes(conn *ldap.Conn, username string, requested []string) (map[string][]string, string, error) {
+func (c Client) resolveDirectBindAttributes(ctx context.Context, conn *ldap.Conn, username string, requested []string) (map[string][]string, string, error) {
 	directoryID := username
 	if len(requestedAttributes(requested, c.config.Attributes)) == 0 || !c.serviceSearchAvailable() {
 		return nil, directoryID, nil
 	}
 
-	if err := c.bindService(conn); err != nil {
+	if err := c.bindService(ctx, conn); err != nil {
 		return nil, "", err
 	}
 
-	user, err := c.resolveUserWithAttributes(conn, username, requested)
+	user, err := c.resolveUserWithAttributes(ctx, conn, username, requested)
 	if err == directory.ErrUserNotFound {
 		return nil, directoryID, nil
 	}
@@ -297,13 +313,17 @@ func (c Client) resolveDirectBindAttributes(conn *ldap.Conn, username string, re
 	return user.attributes, user.dn, nil
 }
 
-func (c Client) resolveAttributesByDN(conn *ldap.Conn, dn string, attributes []string) (map[string][]string, error) {
+func (c Client) resolveAttributesByDN(ctx context.Context, conn *ldap.Conn, dn string, attributes []string) (map[string][]string, error) {
+	timeout, err := c.setOperationTimeout(ctx, conn, c.timeouts.LDAPSearchMS, time.Second)
+	if err != nil {
+		return nil, err
+	}
 	searchRequest := ldap.NewSearchRequest(
 		dn,
 		ldap.ScopeBaseObject,
 		ldap.NeverDerefAliases,
 		1,
-		int(durationFromMS(c.timeouts.LDAPSearchMS, time.Second).Seconds()),
+		ldapTimeLimitSeconds(timeout),
 		false,
 		"(objectClass=*)",
 		attributes,
@@ -321,8 +341,11 @@ func (c Client) resolveAttributesByDN(conn *ldap.Conn, dn string, attributes []s
 	return entryAttributes(result.Entries[0], attributes), nil
 }
 
-func (c Client) dial(_ context.Context, allowInsecure bool) (*ldap.Conn, error) {
-	timeout := durationFromMS(c.timeouts.LDAPConnectMS, 500*time.Millisecond)
+func (c Client) dial(ctx context.Context, allowInsecure bool) (*ldap.Conn, error) {
+	timeout, err := timeoutWithinContext(ctx, c.timeouts.LDAPConnectMS, 500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
 	dialer := &net.Dialer{Timeout: timeout}
 	tlsConfig, err := c.tlsConfig(allowInsecure)
 	if err != nil {
@@ -337,7 +360,6 @@ func (c Client) dial(_ context.Context, allowInsecure bool) (*ldap.Conn, error) 
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", directory.ErrDirectoryUnavailable, err)
 	}
-	conn.SetTimeout(durationFromMS(c.timeouts.LDAPBindMS, 1500*time.Millisecond))
 	return conn, nil
 }
 
@@ -374,8 +396,8 @@ func (c Client) tlsConfig(allowInsecure bool) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-func (c Client) resolveUser(conn *ldap.Conn, username string) (string, error) {
-	user, err := c.resolveUserWithAttributes(conn, username, []string{"dn"})
+func (c Client) resolveUser(ctx context.Context, conn *ldap.Conn, username string) (string, error) {
+	user, err := c.resolveUserWithAttributes(ctx, conn, username, []string{"dn"})
 	if err != nil {
 		return "", err
 	}
@@ -387,7 +409,11 @@ type resolvedUser struct {
 	attributes map[string][]string
 }
 
-func (c Client) resolveUserWithAttributes(conn *ldap.Conn, username string, attributes []string) (resolvedUser, error) {
+func (c Client) resolveUserWithAttributes(ctx context.Context, conn *ldap.Conn, username string, attributes []string) (resolvedUser, error) {
+	timeout, err := c.setOperationTimeout(ctx, conn, c.timeouts.LDAPSearchMS, time.Second)
+	if err != nil {
+		return resolvedUser{}, err
+	}
 	escapedUsername := ldap.EscapeFilter(username)
 	filter := strings.ReplaceAll(c.config.UserFilter, "{username}", escapedUsername)
 	searchAttributes := requestedAttributes(attributes, c.config.Attributes)
@@ -396,7 +422,7 @@ func (c Client) resolveUserWithAttributes(conn *ldap.Conn, username string, attr
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
 		2,
-		int(durationFromMS(c.timeouts.LDAPSearchMS, time.Second).Seconds()),
+		ldapTimeLimitSeconds(timeout),
 		false,
 		filter,
 		searchAttributes,
@@ -464,9 +490,53 @@ func normalizeLDAPError(err error) error {
 	return err
 }
 
+func (c Client) setOperationTimeout(ctx context.Context, conn *ldap.Conn, configuredMS int, fallback time.Duration) (time.Duration, error) {
+	timeout, err := timeoutWithinContext(ctx, configuredMS, fallback)
+	if err != nil {
+		return 0, err
+	}
+	conn.SetTimeout(timeout)
+	return timeout, nil
+}
+
 func durationFromMS(value int, fallback time.Duration) time.Duration {
 	if value <= 0 {
 		return fallback
 	}
 	return time.Duration(value) * time.Millisecond
+}
+
+func timeoutWithinContext(ctx context.Context, value int, fallback time.Duration) (time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("%w: %v", directory.ErrDirectoryUnavailable, err)
+	}
+
+	timeout := durationFromMS(value, fallback)
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0, fmt.Errorf("%w: %v", directory.ErrDirectoryUnavailable, context.DeadlineExceeded)
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	if timeout < time.Millisecond {
+		timeout = time.Millisecond
+	}
+	return timeout, nil
+}
+
+func ldapTimeLimitSeconds(timeout time.Duration) int {
+	if timeout <= 0 {
+		return 1
+	}
+	seconds := int(timeout / time.Second)
+	if timeout%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
