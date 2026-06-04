@@ -103,3 +103,41 @@ func TestParseRejectsSingleTenantWithMultipleTenants(t *testing.T) {
 		t.Fatalf("Parse() error = %v", err)
 	}
 }
+
+func TestParseRejectsUnsupportedLookupMode(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `lookup_mode: "magic_bind"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want lookup_mode error")
+	}
+	if !strings.Contains(err.Error(), "lookup_mode must be search_then_bind, dn_template, or direct_bind") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRequiresDNTemplateForDNTemplateMode(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `lookup_mode: "dn_template"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want dn_template error")
+	}
+	if !strings.Contains(err.Error(), "dn_template is required when lookup_mode is dn_template") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseAllowsDirectBindWithoutServiceBind(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `lookup_mode: "direct_bind"`, 1)
+	raw = strings.Replace(raw, `      bind_dn: "uid=authrim,ou=system,dc=example,dc=com"
+      bind_password_ref: "env:LDAP_BIND_PASSWORD"
+      base_dn: "dc=example,dc=com"
+      user_filter: "(uid={username})"
+`, "", 1)
+
+	_, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}

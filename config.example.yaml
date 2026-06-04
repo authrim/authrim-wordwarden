@@ -45,6 +45,8 @@ tenants:
       bind_dn: "uid=authrim,ou=system,dc=example,dc=com"
       bind_password_ref: "env:LDAP_BIND_PASSWORD"
       base_dn: "dc=example,dc=com"
+      # Required when lookup_mode is "dn_template".
+      # dn_template: "uid={username},ou=People,dc=example,dc=com"
       user_filter: "(|(uid={username})(mail={username}))"
       filter_template_mode: "builtin_or_template"
       attributes:

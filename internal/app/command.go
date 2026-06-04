@@ -156,11 +156,7 @@ func newLDAPCommand(configPath *string) *cobra.Command {
 			}
 
 			resolver := secretsadapter.NewResolver()
-			ref, err := secrets.ParseRef(tenant.LDAP.BindPasswordRef)
-			if err != nil {
-				return err
-			}
-			bindPassword, err := resolver.ResolveSecret(cmd.Context(), ref)
+			bindPassword, err := resolveOptionalSecretBytes(cmd.Context(), resolver, tenant.LDAP.BindPasswordRef)
 			if err != nil {
 				return fmt.Errorf("resolve LDAP bind password: %w", err)
 			}
@@ -242,7 +238,7 @@ func buildTenantRuntimes(ctx context.Context, cfg *config.Config) (map[string]ht
 			return nil, fmt.Errorf("tenant %s audit hash secret: %w", tenant.TenantID, err)
 		}
 
-		bindPassword, err := resolveSecretBytes(ctx, resolver, tenant.LDAP.BindPasswordRef)
+		bindPassword, err := resolveOptionalSecretBytes(ctx, resolver, tenant.LDAP.BindPasswordRef)
 		if err != nil {
 			return nil, fmt.Errorf("tenant %s LDAP bind password: %w", tenant.TenantID, err)
 		}
@@ -270,6 +266,13 @@ func resolveSecretBytes(ctx context.Context, resolver secretsadapter.Resolver, r
 		return nil, err
 	}
 	return []byte(value), nil
+}
+
+func resolveOptionalSecretBytes(ctx context.Context, resolver secretsadapter.Resolver, raw string) ([]byte, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	return resolveSecretBytes(ctx, resolver, raw)
 }
 
 func findTenant(cfg *config.Config, tenantID string) (config.TenantConfig, error) {

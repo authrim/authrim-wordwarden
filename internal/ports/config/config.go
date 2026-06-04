@@ -66,6 +66,7 @@ type LDAPConfig struct {
 	BindDN             string         `yaml:"bind_dn"`
 	BindPasswordRef    string         `yaml:"bind_password_ref"`
 	BaseDN             string         `yaml:"base_dn"`
+	DNTemplate         string         `yaml:"dn_template"`
 	UserFilter         string         `yaml:"user_filter"`
 	FilterTemplateMode string         `yaml:"filter_template_mode"`
 	Attributes         []string       `yaml:"attributes"`
@@ -236,16 +237,30 @@ func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 		*problems = append(*problems, prefix+".tls.verify must be true")
 	}
 	validateFileRef(problems, prefix+".tls.ca_file_ref", ldap.TLS.CAFileRef, false)
-	validateSecretRef(problems, prefix+".bind_password_ref", ldap.BindPasswordRef)
-	if ldap.BindDN == "" {
-		*problems = append(*problems, prefix+".bind_dn is required")
+
+	switch ldap.LookupMode {
+	case "search_then_bind":
+		validateSecretRef(problems, prefix+".bind_password_ref", ldap.BindPasswordRef)
+		if ldap.BindDN == "" {
+			*problems = append(*problems, prefix+".bind_dn is required")
+		}
+		if ldap.BaseDN == "" {
+			*problems = append(*problems, prefix+".base_dn is required")
+		}
+		if ldap.UserFilter == "" {
+			*problems = append(*problems, prefix+".user_filter is required")
+		}
+	case "dn_template":
+		if ldap.DNTemplate == "" {
+			*problems = append(*problems, prefix+".dn_template is required when lookup_mode is dn_template")
+		}
+		validateOptionalSecretRef(problems, prefix+".bind_password_ref", ldap.BindPasswordRef)
+	case "direct_bind":
+		validateOptionalSecretRef(problems, prefix+".bind_password_ref", ldap.BindPasswordRef)
+	default:
+		*problems = append(*problems, prefix+".lookup_mode must be search_then_bind, dn_template, or direct_bind")
 	}
-	if ldap.BaseDN == "" {
-		*problems = append(*problems, prefix+".base_dn is required")
-	}
-	if ldap.UserFilter == "" {
-		*problems = append(*problems, prefix+".user_filter is required")
-	}
+
 	if len(ldap.Attributes) == 0 {
 		*problems = append(*problems, prefix+".attributes must contain at least one attribute")
 	}
@@ -294,6 +309,13 @@ func validateSecretRef(problems *[]string, field string, raw string) {
 	if _, err := secrets.ParseRef(raw); err != nil {
 		*problems = append(*problems, field+": "+err.Error())
 	}
+}
+
+func validateOptionalSecretRef(problems *[]string, field string, raw string) {
+	if raw == "" {
+		return
+	}
+	validateSecretRef(problems, field, raw)
 }
 
 func validateFileRef(problems *[]string, field string, raw string, required bool) {
