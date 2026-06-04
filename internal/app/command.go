@@ -86,20 +86,27 @@ func newServeCommand(configPath *string) *cobra.Command {
 			stopCh := make(chan os.Signal, 1)
 			signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
 
-			select {
-			case sig := <-stopCh:
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := server.Shutdown(shutdownCtx); err != nil {
+			reloadCh := make(chan os.Signal, 1)
+			signal.Notify(reloadCh, syscall.SIGHUP)
+
+			for {
+				select {
+				case sig := <-reloadCh:
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "received %s, config reload is not supported in alpha; restart required\n", sig)
+				case sig := <-stopCh:
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := server.Shutdown(shutdownCtx); err != nil {
+						return err
+					}
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "received %s, stopped\n", sig)
+					return nil
+				case err := <-errCh:
+					if errors.Is(err, http.ErrServerClosed) {
+						return nil
+					}
 					return err
 				}
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "received %s, stopped\n", sig)
-				return nil
-			case err := <-errCh:
-				if errors.Is(err, http.ErrServerClosed) {
-					return nil
-				}
-				return err
 			}
 		},
 	}

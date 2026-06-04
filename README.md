@@ -50,6 +50,9 @@ docker run --rm -p 8080:8080 \
   authrim-wordwarden:dev --config /etc/authrim-wordwarden/config.yaml serve
 ```
 
+Deployment samples are under `deploy/`. Configuration changes require a process
+restart in Alpha.
+
 Health check:
 
 ```bash

@@ -1,0 +1,18 @@
+services:
+  wordwarden:
+    image: ghcr.io/authrim/authrim-wordwarden:latest
+    command: ["--config", "/etc/authrim-wordwarden/config.yaml", "serve"]
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/etc/authrim-wordwarden/config.yaml:ro
+      - ./ca:/etc/authrim-wordwarden/ca:ro
+      - ./secrets:/etc/authrim-wordwarden/secrets:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
