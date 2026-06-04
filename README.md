@@ -29,6 +29,7 @@ Current implementation slice:
 - connector concurrency protection hook
 - connector storm protection for HMAC failures, malformed/replayed requests, and directory errors
 - OpenLDAP integration fixture
+- CI for tests, example config validation, and Docker image build
 
 The guarded OpenLDAP integration test is available under
 `test/integration/openldap`.
