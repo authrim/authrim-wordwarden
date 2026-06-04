@@ -8,7 +8,6 @@ import (
 type StormProtectionPolicy struct {
 	WindowMS              int
 	BlockMS               int
-	HMACFailureLimit      int
 	MalformedRequestLimit int
 	ReplayLimit           int
 	DirectoryErrorLimit   int
@@ -17,7 +16,6 @@ type StormProtectionPolicy struct {
 type stormKind string
 
 const (
-	stormKindHMACFailure    stormKind = "hmac_failure"
 	stormKindMalformed      stormKind = "malformed_request"
 	stormKindReplay         stormKind = "replay"
 	stormKindDirectoryError stormKind = "directory_error"
@@ -50,9 +48,6 @@ func defaultStormProtectionPolicy(policy StormProtectionPolicy) StormProtectionP
 	}
 	if policy.BlockMS <= 0 {
 		policy.BlockMS = 30000
-	}
-	if policy.HMACFailureLimit <= 0 {
-		policy.HMACFailureLimit = 30
 	}
 	if policy.MalformedRequestLimit <= 0 {
 		policy.MalformedRequestLimit = 20
@@ -108,8 +103,6 @@ func (s *connectorStorms) reset(kind stormKind) {
 
 func (s *connectorStorms) limit(kind stormKind) int {
 	switch kind {
-	case stormKindHMACFailure:
-		return s.policy.HMACFailureLimit
 	case stormKindMalformed:
 		return s.policy.MalformedRequestLimit
 	case stormKindReplay:

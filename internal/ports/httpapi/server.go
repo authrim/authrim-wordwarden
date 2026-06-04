@@ -145,20 +145,6 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if h.stormBlocked(connectorID, stormKindHMACFailure) {
-		h.emit(req, audit.Event{
-			EventType:   audit.EventVerifyError,
-			TenantID:    runtime.TenantID,
-			ConnectorID: runtime.ConnectorID,
-			Result:      "error",
-			ErrorCode:   "hmac_failure_storm_limited",
-			Retryable:   true,
-			LatencyMS:   latencyMS(start),
-		})
-		writeStormError(w, connectorID, "hmac_failure_storm_limited")
-		return
-	}
-
 	req.Body = http.MaxBytesReader(w, req.Body, maxVerifyPasswordBodyBytes)
 	verification, body, err := runtime.HMACVerifier.Verify(req)
 	if err != nil {
@@ -192,7 +178,6 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			ConnectorID: connectorID,
 			Error:       errorPayload{Code: hmacErrorCode(err), Retryable: false},
 		})
-		h.recordStorm(connectorID, stormKindHMACFailure)
 		return
 	}
 	if h.stormBlocked(connectorID, stormKindReplay) {
@@ -210,7 +195,7 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 		writeStormErrorWithRequest(w, verification.RequestID, connectorID, "replay_storm_limited")
 		return
 	}
-	if !h.replay.Remember(verification.RequestID + ":" + verification.Nonce) {
+	if !h.replay.Remember(replayKey(runtime.ConnectorID, verification.KeyID, verification.RequestID, verification.Nonce)) {
 		h.emit(req, audit.Event{
 			EventType:   audit.EventReplayDetected,
 			TenantID:    runtime.TenantID,
@@ -529,6 +514,10 @@ func usernameHash(secret []byte, username string) string {
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(username))
 	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func replayKey(connectorID string, keyID string, requestID string, nonce string) string {
+	return connectorID + ":" + keyID + ":" + requestID + ":" + nonce
 }
 
 func (h *handler) acquire(connectorID string) (func(), bool) {

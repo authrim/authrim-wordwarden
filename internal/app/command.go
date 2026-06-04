@@ -261,7 +261,6 @@ func buildTenantRuntimes(ctx context.Context, cfg *config.Config) (map[string]ht
 			StormProtection: httpapi.StormProtectionPolicy{
 				WindowMS:              tenant.Protection.StormWindowMS,
 				BlockMS:               tenant.Protection.StormBlockMS,
-				HMACFailureLimit:      tenant.Protection.HMACFailureLimit,
 				MalformedRequestLimit: tenant.Protection.MalformedRequestLimit,
 				ReplayLimit:           tenant.Protection.ReplayLimit,
 				DirectoryErrorLimit:   tenant.Protection.DirectoryErrorLimit,

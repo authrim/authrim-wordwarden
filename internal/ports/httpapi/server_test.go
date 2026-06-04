@@ -246,6 +246,56 @@ func TestVerifyPasswordRejectsReplay(t *testing.T) {
 	}
 }
 
+func TestVerifyPasswordScopesReplayByConnectorAndKey(t *testing.T) {
+	handler := NewHandler("test-version", HandlerOptions{
+		Tenants: map[string]TenantRuntime{
+			"ww_tenant_a": {
+				TenantID:        "tenant-a",
+				ConnectorID:     "ww_tenant_a",
+				HMACVerifier:    testVerifier(),
+				Directory:       fakeDirectory{},
+				AuditHashSecret: []byte("audit-secret-a"),
+			},
+			"ww_tenant_b": {
+				TenantID:        "tenant-b",
+				ConnectorID:     "ww_tenant_b",
+				HMACVerifier:    testVerifier(),
+				Directory:       fakeDirectory{},
+				AuditHashSecret: []byte("audit-secret-b"),
+			},
+		},
+		Audit: audit.DiscardSink{},
+	})
+
+	bodyA := `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`
+	reqA := signedVerifyPasswordRequestForConnector(t, bodyA, "req_123", "nonce_123", "ww_tenant_a", []byte("active-secret"))
+	recA := httptest.NewRecorder()
+	handler.ServeHTTP(recA, reqA)
+	if recA.Code != http.StatusOK {
+		t.Fatalf("tenant A status = %d body = %s", recA.Code, recA.Body.String())
+	}
+
+	bodyB := `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-b",
+		"connector_id":"ww_tenant_b",
+		"username":"alice",
+		"password":"correct"
+	}`
+	reqB := signedVerifyPasswordRequestForConnector(t, bodyB, "req_123", "nonce_123", "ww_tenant_b", []byte("active-secret"))
+	recB := httptest.NewRecorder()
+	handler.ServeHTTP(recB, reqB)
+	if recB.Code != http.StatusOK {
+		t.Fatalf("tenant B status = %d body = %s", recB.Code, recB.Body.String())
+	}
+}
+
 func TestVerifyPasswordWritesRedactedAuditEvent(t *testing.T) {
 	sink := &memoryAuditSink{}
 	handler := newTestHandlerWithAudit(sink)
@@ -330,7 +380,7 @@ func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
 	wg.Wait()
 }
 
-func TestVerifyPasswordLimitsHMACFailureStorm(t *testing.T) {
+func TestVerifyPasswordDoesNotConnectorBlockAfterHMACFailures(t *testing.T) {
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:        "tenant-a",
 		ConnectorID:     "ww_tenant_a",
@@ -338,9 +388,8 @@ func TestVerifyPasswordLimitsHMACFailureStorm(t *testing.T) {
 		Directory:       fakeDirectory{},
 		AuditHashSecret: []byte("audit-secret"),
 		StormProtection: StormProtectionPolicy{
-			HMACFailureLimit: 1,
-			WindowMS:         60000,
-			BlockMS:          60000,
+			WindowMS: 60000,
+			BlockMS:  60000,
 		},
 	})
 
@@ -367,16 +416,8 @@ func TestVerifyPasswordLimitsHMACFailureStorm(t *testing.T) {
 	goodReq := signedVerifyPasswordRequestWithID(t, goodBody, "req_456", "nonce_456", []byte("active-secret"))
 	goodRec := httptest.NewRecorder()
 	handler.ServeHTTP(goodRec, goodReq)
-	if goodRec.Code != http.StatusTooManyRequests {
-		t.Fatalf("storm status = %d body = %s", goodRec.Code, goodRec.Body.String())
-	}
-
-	var body errorResponse
-	if err := json.Unmarshal(goodRec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
-	if body.Error.Code != "hmac_failure_storm_limited" || !body.Error.Retryable {
-		t.Fatalf("body = %#v", body)
+	if goodRec.Code != http.StatusOK {
+		t.Fatalf("good request status = %d body = %s", goodRec.Code, goodRec.Body.String())
 	}
 }
 
@@ -481,11 +522,15 @@ func signedVerifyPasswordRequest(t *testing.T, body string, nonce string, secret
 }
 
 func signedVerifyPasswordRequestWithID(t *testing.T, body string, requestID string, nonce string, secret []byte) *http.Request {
+	return signedVerifyPasswordRequestForConnector(t, body, requestID, nonce, "ww_tenant_a", secret)
+}
+
+func signedVerifyPasswordRequestForConnector(t *testing.T, body string, requestID string, nonce string, connectorID string, secret []byte) *http.Request {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify-password", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(hmacadapter.HeaderConnectorID, "ww_tenant_a")
+	req.Header.Set(hmacadapter.HeaderConnectorID, connectorID)
 	req.Header.Set(hmacadapter.HeaderKeyID, "kid-active")
 	req.Header.Set(hmacadapter.HeaderRequestID, requestID)
 	req.Header.Set(hmacadapter.HeaderTimestamp, fixedHMACTime().Format(time.RFC3339))

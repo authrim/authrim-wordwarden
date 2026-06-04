@@ -9,6 +9,7 @@ import (
 
 	"github.com/authrim/authrim-wordwarden/internal/core/directory"
 	"github.com/authrim/authrim-wordwarden/internal/ports/config"
+	"github.com/go-ldap/ldap/v3"
 )
 
 func TestUserDNFromTemplateEscapesUsername(t *testing.T) {
@@ -39,6 +40,16 @@ func TestBindUserRejectsEmptyPasswordBeforeLDAPBind(t *testing.T) {
 
 	if err := client.bindUser(context.Background(), nil, "uid=alice,ou=People,dc=example,dc=com", ""); !errors.Is(err, directory.ErrInvalidCredentials) {
 		t.Fatalf("bindUser() error = %v, want %v", err, directory.ErrInvalidCredentials)
+	}
+}
+
+func TestSingleSearchEntryRejectsAmbiguousResults(t *testing.T) {
+	_, err := singleSearchEntry([]*ldap.Entry{
+		{DN: "uid=alice,ou=People,dc=example,dc=com"},
+		{DN: "uid=alice2,ou=People,dc=example,dc=com"},
+	})
+	if !errors.Is(err, directory.ErrAmbiguousUser) {
+		t.Fatalf("singleSearchEntry() error = %v, want %v", err, directory.ErrAmbiguousUser)
 	}
 }
 

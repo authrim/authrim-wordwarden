@@ -8,6 +8,7 @@ import (
 var (
 	ErrInvalidCredentials   = errors.New("invalid_credentials")
 	ErrUserNotFound         = errors.New("user_not_found")
+	ErrAmbiguousUser        = errors.New("ambiguous_user")
 	ErrDirectoryTLS         = errors.New("directory_tls_error")
 	ErrDirectoryUnavailable = errors.New("directory_unavailable")
 )

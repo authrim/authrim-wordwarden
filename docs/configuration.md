@@ -37,7 +37,8 @@ validates reference syntax without reading secret values.
 `search_then_bind`:
 
 - service-bind with `bind_dn` / `bind_password_ref`
-- search under `base_dn` using `user_filter`
+- search under `base_dn` using `user_filter`; the filter must contain
+  `{username}` and must resolve exactly one LDAP entry
 - bind as the resolved user DN with the submitted password
 - best default for LDAP/AD deployments
 
@@ -76,7 +77,6 @@ protection:
   max_concurrent_requests: 8
   storm_window_ms: 10000
   storm_block_ms: 30000
-  hmac_failure_limit: 30
   malformed_request_limit: 20
   replay_limit: 10
   directory_error_limit: 5

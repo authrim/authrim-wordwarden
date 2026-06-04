@@ -103,7 +103,6 @@ type ProtectionConfig struct {
 	MaxConcurrentRequests int `yaml:"max_concurrent_requests"`
 	StormWindowMS         int `yaml:"storm_window_ms"`
 	StormBlockMS          int `yaml:"storm_block_ms"`
-	HMACFailureLimit      int `yaml:"hmac_failure_limit"`
 	MalformedRequestLimit int `yaml:"malformed_request_limit"`
 	ReplayLimit           int `yaml:"replay_limit"`
 	DirectoryErrorLimit   int `yaml:"directory_error_limit"`
@@ -166,9 +165,6 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Tenants[i].Protection.StormBlockMS == 0 {
 			cfg.Tenants[i].Protection.StormBlockMS = 30000
-		}
-		if cfg.Tenants[i].Protection.HMACFailureLimit == 0 {
-			cfg.Tenants[i].Protection.HMACFailureLimit = 30
 		}
 		if cfg.Tenants[i].Protection.MalformedRequestLimit == 0 {
 			cfg.Tenants[i].Protection.MalformedRequestLimit = 20
@@ -258,9 +254,6 @@ func validateProtection(problems *[]string, prefix string, protection Protection
 	if protection.StormBlockMS <= 0 {
 		*problems = append(*problems, prefix+".storm_block_ms must be positive")
 	}
-	if protection.HMACFailureLimit <= 0 {
-		*problems = append(*problems, prefix+".hmac_failure_limit must be positive")
-	}
 	if protection.MalformedRequestLimit <= 0 {
 		*problems = append(*problems, prefix+".malformed_request_limit must be positive")
 	}
@@ -295,6 +288,9 @@ func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 		}
 		if ldap.UserFilter == "" {
 			*problems = append(*problems, prefix+".user_filter is required")
+		}
+		if ldap.UserFilter != "" && !strings.Contains(ldap.UserFilter, "{username}") {
+			*problems = append(*problems, prefix+".user_filter must contain {username}")
 		}
 	case "dn_template":
 		if ldap.DNTemplate == "" {

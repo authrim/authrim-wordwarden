@@ -433,15 +433,26 @@ func (c Client) resolveUserWithAttributes(ctx context.Context, conn *ldap.Conn, 
 	if err != nil {
 		return resolvedUser{}, normalizeLDAPError(err)
 	}
-	if len(result.Entries) == 0 {
-		return resolvedUser{}, directory.ErrUserNotFound
+	entry, err := singleSearchEntry(result.Entries)
+	if err != nil {
+		return resolvedUser{}, err
 	}
 
-	entry := result.Entries[0]
 	return resolvedUser{
 		dn:         entry.DN,
 		attributes: entryAttributes(entry, searchAttributes),
 	}, nil
+}
+
+func singleSearchEntry(entries []*ldap.Entry) (*ldap.Entry, error) {
+	switch len(entries) {
+	case 0:
+		return nil, directory.ErrUserNotFound
+	case 1:
+		return entries[0], nil
+	default:
+		return nil, directory.ErrAmbiguousUser
+	}
 }
 
 func requestedAttributes(requested []string, allowed []string) []string {

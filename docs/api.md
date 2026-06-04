@@ -101,7 +101,8 @@ Invalid credentials response:
 
 Credential verdicts use HTTP `200`. Transport, authentication, malformed
 request, replay, storm-limit, and directory availability failures use HTTP
-errors.
+errors. HMAC failures are not allowed to block a connector-wide login path
+because they are unauthenticated.
 
 ## Error Codes
 
@@ -120,7 +121,6 @@ errors.
 | 403 | `tenant_connector_mismatch` | false |
 | 409 | `replay_detected` | false |
 | 429 | `connector_rate_limited` | true |
-| 429 | `hmac_failure_storm_limited` | true |
 | 429 | `malformed_request_storm_limited` | true |
 | 429 | `replay_storm_limited` | true |
 | 503 | `directory_unavailable` | true |
