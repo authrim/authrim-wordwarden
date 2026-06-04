@@ -1,0 +1,54 @@
+deployment:
+  mode: "single_tenant"
+
+server:
+  listen: "127.0.0.1:8080"
+  public_base_url: "https://wordwarden.example.com"
+  tls:
+    enabled: false
+    cert_file_ref: null
+    key_file_ref: null
+
+tenants:
+  - tenant_id: "tenant-a"
+    connector_id: "ww_tenant_a"
+    authrim:
+      hmac_keys:
+        active:
+          kid: "kid_2026_06"
+          secret_ref: "env:AUTHRIM_WORDWARDEN_SECRET_ACTIVE"
+        previous:
+          kid: "kid_2026_05"
+          secret_ref: "file:/etc/authrim-wordwarden/secrets/hmac-previous"
+      audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+    ldap:
+      url: "ldaps://ldap.example.com:636"
+      tls:
+        verify: true
+        server_name: "ldap.example.com"
+        ca_file_ref: "file:/etc/authrim-wordwarden/ca/ldap-ca.pem"
+      lookup_mode: "search_then_bind"
+      username:
+        allowed_formats:
+          - local_part
+          - email
+          - upn
+        normalization:
+          trim: true
+          unicode: "NFKC"
+          case: "lower"
+          reject_domain_mismatch: true
+      bind_dn: "uid=authrim,ou=system,dc=example,dc=com"
+      bind_password_ref: "env:LDAP_BIND_PASSWORD"
+      base_dn: "dc=example,dc=com"
+      user_filter: "(|(uid={username})(mail={username}))"
+      filter_template_mode: "builtin_or_template"
+      attributes:
+        - uid
+        - mail
+        - displayName
+    timeouts:
+      ldap_connect_ms: 500
+      ldap_bind_ms: 1500
+      ldap_search_ms: 1000
+      request_ms: 2500

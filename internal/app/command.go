@@ -1,0 +1,265 @@
+package app
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	ldapadapter "github.com/authrim/authrim-wordwarden/internal/adapters/ldap"
+	secretsadapter "github.com/authrim/authrim-wordwarden/internal/adapters/secrets"
+	"github.com/authrim/authrim-wordwarden/internal/core/directory"
+	"github.com/authrim/authrim-wordwarden/internal/ports/config"
+	"github.com/authrim/authrim-wordwarden/internal/ports/httpapi"
+	"github.com/authrim/authrim-wordwarden/internal/ports/secrets"
+	"github.com/spf13/cobra"
+)
+
+const version = "0.1.0"
+
+func Execute() error {
+	return NewRootCommand().Execute()
+}
+
+func NewRootCommand() *cobra.Command {
+	var configPath string
+
+	root := &cobra.Command{
+		Use:           "wordwarden",
+		Short:         "Authrim Wordwarden Directory Connector",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.PersistentFlags().StringVar(&configPath, "config", "config.yaml", "Path to Wordwarden config YAML")
+
+	root.AddCommand(newServeCommand(&configPath))
+	root.AddCommand(newConfigCommand(&configPath))
+	root.AddCommand(newLDAPCommand(&configPath))
+	root.AddCommand(newVersionCommand())
+
+	return root
+}
+
+func newServeCommand(configPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "serve",
+		Short: "Run the Wordwarden HTTP server",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.LoadFile(*configPath)
+			if err != nil {
+				return err
+			}
+
+			server := &http.Server{
+				Addr:              cfg.Server.Listen,
+				Handler:           httpapi.NewHandler(version),
+				ReadHeaderTimeout: 5 * time.Second,
+			}
+
+			errCh := make(chan error, 1)
+			go func() {
+				if cfg.Server.TLS.Enabled {
+					certPath, keyPath, err := tlsFilePaths(cfg.Server.TLS)
+					if err != nil {
+						errCh <- err
+						return
+					}
+					errCh <- server.ListenAndServeTLS(certPath, keyPath)
+					return
+				}
+				errCh <- server.ListenAndServe()
+			}()
+
+			stopCh := make(chan os.Signal, 1)
+			signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
+
+			select {
+			case sig := <-stopCh:
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := server.Shutdown(shutdownCtx); err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "received %s, stopped\n", sig)
+				return nil
+			case err := <-errCh:
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			}
+		},
+	}
+}
+
+func newConfigCommand(configPath *string) *cobra.Command {
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Inspect and validate Wordwarden configuration",
+	}
+
+	validateCmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate Wordwarden config without reading secret values",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := config.LoadFile(*configPath); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "config valid")
+			return nil
+		},
+	}
+
+	configCmd.AddCommand(validateCmd)
+	return configCmd
+}
+
+func newLDAPCommand(configPath *string) *cobra.Command {
+	var tenantID string
+	var username string
+	var passwordStdin bool
+	var allowInsecure bool
+
+	ldapCmd := &cobra.Command{
+		Use:   "ldap",
+		Short: "Run LDAP diagnostics",
+	}
+
+	testCmd := &cobra.Command{
+		Use:   "test",
+		Short: "Test LDAP TLS, service bind, filter, and optional user bind",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if tenantID == "" {
+				return errors.New("--tenant is required")
+			}
+
+			cfg, err := config.LoadFile(*configPath)
+			if err != nil {
+				return err
+			}
+			tenant, err := findTenant(cfg, tenantID)
+			if err != nil {
+				return err
+			}
+
+			resolver := secretsadapter.NewResolver()
+			ref, err := secrets.ParseRef(tenant.LDAP.BindPasswordRef)
+			if err != nil {
+				return err
+			}
+			bindPassword, err := resolver.ResolveSecret(cmd.Context(), ref)
+			if err != nil {
+				return fmt.Errorf("resolve LDAP bind password: %w", err)
+			}
+
+			password := ""
+			if passwordStdin {
+				password, err = readPassword(cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				if username == "" {
+					return errors.New("--username is required when --password-stdin is used")
+				}
+			}
+
+			client := ldapadapter.NewClient(tenant.LDAP, string(bindPassword), tenant.Timeouts)
+			result, err := client.TestConnection(cmd.Context(), directory.TestConnectionRequest{
+				Username:      username,
+				Password:      password,
+				TestPassword:  passwordStdin,
+				AllowInsecure: allowInsecure,
+			})
+			if err != nil {
+				return err
+			}
+
+			printLDAPTestResult(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+
+	testCmd.Flags().StringVar(&tenantID, "tenant", "", "Tenant id to test")
+	testCmd.Flags().StringVar(&username, "username", "", "Optional username for user DN resolution")
+	testCmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read user password from stdin and test user bind")
+	testCmd.Flags().BoolVar(&allowInsecure, "insecure", false, "Diagnostic-only: skip LDAP TLS certificate verification")
+
+	ldapCmd.AddCommand(testCmd)
+	return ldapCmd
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print Wordwarden version",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), version)
+			return nil
+		},
+	}
+}
+
+func findTenant(cfg *config.Config, tenantID string) (config.TenantConfig, error) {
+	for _, tenant := range cfg.Tenants {
+		if tenant.TenantID == tenantID {
+			return tenant, nil
+		}
+	}
+	return config.TenantConfig{}, fmt.Errorf("tenant %q not found", tenantID)
+}
+
+func readPassword(reader io.Reader) (string, error) {
+	line, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
+func printLDAPTestResult(writer io.Writer, result directory.TestConnectionResult) {
+	_, _ = fmt.Fprintln(writer, "ldap test ok")
+	_, _ = fmt.Fprintf(writer, "tls_verified=%t\n", result.TLSVerified)
+	_, _ = fmt.Fprintf(writer, "service_bound=%t\n", result.ServiceBound)
+	if result.UserResolved {
+		_, _ = fmt.Fprintln(writer, "user_resolved=true")
+	}
+	if result.PasswordOK {
+		_, _ = fmt.Fprintln(writer, "password_bind=true")
+	}
+}
+
+func tlsFilePaths(tls config.ServerTLSConfig) (string, string, error) {
+	if tls.CertFileRef == "" || tls.KeyFileRef == "" {
+		return "", "", errors.New("server.tls.cert_file_ref and key_file_ref are required when server.tls.enabled is true")
+	}
+
+	certPath, err := fileRefPath(tls.CertFileRef)
+	if err != nil {
+		return "", "", fmt.Errorf("server.tls.cert_file_ref: %w", err)
+	}
+	keyPath, err := fileRefPath(tls.KeyFileRef)
+	if err != nil {
+		return "", "", fmt.Errorf("server.tls.key_file_ref: %w", err)
+	}
+
+	return certPath, keyPath, nil
+}
+
+func fileRefPath(ref string) (string, error) {
+	const prefix = "file:"
+	if !strings.HasPrefix(ref, prefix) {
+		return "", fmt.Errorf("must use %s reference", prefix)
+	}
+	path := strings.TrimPrefix(ref, prefix)
+	if path == "" {
+		return "", errors.New("file reference path is empty")
+	}
+	return path, nil
+}
