@@ -1,0 +1,9 @@
+.git
+.gitignore
+Dockerfile
+README.md
+test/integration/openldap/certs/*
+coverage.out
+*.test
+wordwarden
+tmp/

@@ -40,6 +40,15 @@ go run ./cmd/wordwarden --config config.example.yaml config validate
 go run ./cmd/wordwarden --config config.example.yaml serve
 ```
 
+Docker image:
+
+```bash
+docker build -t authrim-wordwarden:dev .
+docker run --rm -p 8080:8080 \
+  -v "$PWD/config.example.yaml:/etc/authrim-wordwarden/config.yaml:ro" \
+  authrim-wordwarden:dev --config /etc/authrim-wordwarden/config.yaml serve
+```
+
 Health check:
 
 ```bash
