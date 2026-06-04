@@ -18,11 +18,12 @@ import (
 )
 
 type TenantRuntime struct {
-	TenantID        string
-	ConnectorID     string
-	HMACVerifier    hmacadapter.Verifier
-	Directory       directory.Client
-	AuditHashSecret []byte
+	TenantID         string
+	ConnectorID      string
+	HMACVerifier     hmacadapter.Verifier
+	Directory        directory.Client
+	AuditHashSecret  []byte
+	ConcurrencyLimit int
 }
 
 type HandlerOptions struct {
@@ -41,6 +42,7 @@ type handler struct {
 	tenants map[string]TenantRuntime
 	replay  *replayCache
 	audit   audit.Sink
+	limits  map[string]chan struct{}
 }
 
 func NewHandler(version string, options ...HandlerOptions) http.Handler {
@@ -49,12 +51,20 @@ func NewHandler(version string, options ...HandlerOptions) http.Handler {
 		tenants: map[string]TenantRuntime{},
 		replay:  newReplayCache(5 * time.Minute),
 		audit:   audit.DiscardSink{},
+		limits:  map[string]chan struct{}{},
 	}
 	if len(options) > 0 && options[0].Tenants != nil {
 		h.tenants = options[0].Tenants
 	}
 	if len(options) > 0 && options[0].Audit != nil {
 		h.audit = options[0].Audit
+	}
+	for connectorID, runtime := range h.tenants {
+		limit := runtime.ConcurrencyLimit
+		if limit <= 0 {
+			limit = 8
+		}
+		h.limits[connectorID] = make(chan struct{}, limit)
 	}
 
 	mux := http.NewServeMux()
@@ -162,6 +172,28 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 		})
 		return
 	}
+
+	release, ok := h.acquire(connectorID)
+	if !ok {
+		h.emit(req, audit.Event{
+			EventType:   audit.EventVerifyError,
+			TenantID:    runtime.TenantID,
+			ConnectorID: runtime.ConnectorID,
+			RequestID:   verification.RequestID,
+			KeyID:       verification.KeyID,
+			Result:      "error",
+			ErrorCode:   "connector_rate_limited",
+			Retryable:   true,
+			LatencyMS:   latencyMS(start),
+		})
+		writeError(w, http.StatusTooManyRequests, errorResponse{
+			RequestID:   verification.RequestID,
+			ConnectorID: connectorID,
+			Error:       errorPayload{Code: "connector_rate_limited", Retryable: true},
+		})
+		return
+	}
+	defer release()
 
 	var requestBody verifyPasswordRequest
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&requestBody); err != nil {
@@ -341,6 +373,19 @@ func usernameHash(secret []byte, username string) string {
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(username))
 	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func (h *handler) acquire(connectorID string) (func(), bool) {
+	limit, ok := h.limits[connectorID]
+	if !ok {
+		return func() {}, true
+	}
+	select {
+	case limit <- struct{}{}:
+		return func() { <-limit }, true
+	default:
+		return nil, false
+	}
 }
 
 type replayCache struct {

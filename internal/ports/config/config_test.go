@@ -28,6 +28,7 @@ tenants:
       lookup_mode: "search_then_bind"
       username:
         allowed_formats: ["local_part"]
+        allowed_domains: ["example.com"]
         normalization:
           trim: true
           unicode: "NFKC"

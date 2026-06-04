@@ -35,11 +35,12 @@ type ServerTLSConfig struct {
 }
 
 type TenantConfig struct {
-	TenantID    string        `yaml:"tenant_id"`
-	ConnectorID string        `yaml:"connector_id"`
-	Authrim     AuthrimConfig `yaml:"authrim"`
-	LDAP        LDAPConfig    `yaml:"ldap"`
-	Timeouts    TimeoutConfig `yaml:"timeouts"`
+	TenantID    string           `yaml:"tenant_id"`
+	ConnectorID string           `yaml:"connector_id"`
+	Authrim     AuthrimConfig    `yaml:"authrim"`
+	LDAP        LDAPConfig       `yaml:"ldap"`
+	Timeouts    TimeoutConfig    `yaml:"timeouts"`
+	Protection  ProtectionConfig `yaml:"protection"`
 }
 
 type AuthrimConfig struct {
@@ -77,8 +78,10 @@ type LDAPTLSConfig struct {
 }
 
 type UsernameConfig struct {
-	AllowedFormats []string                    `yaml:"allowed_formats"`
-	Normalization  UsernameNormalizationConfig `yaml:"normalization"`
+	AllowedFormats     []string                    `yaml:"allowed_formats"`
+	AllowedDomains     []string                    `yaml:"allowed_domains"`
+	AllowedUPNSuffixes []string                    `yaml:"allowed_upn_suffixes"`
+	Normalization      UsernameNormalizationConfig `yaml:"normalization"`
 }
 
 type UsernameNormalizationConfig struct {
@@ -93,6 +96,10 @@ type TimeoutConfig struct {
 	LDAPBindMS    int `yaml:"ldap_bind_ms"`
 	LDAPSearchMS  int `yaml:"ldap_search_ms"`
 	RequestMS     int `yaml:"request_ms"`
+}
+
+type ProtectionConfig struct {
+	MaxConcurrentRequests int `yaml:"max_concurrent_requests"`
 }
 
 func LoadFile(path string) (*Config, error) {
@@ -143,6 +150,9 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Tenants[i].Timeouts.RequestMS == 0 {
 			cfg.Tenants[i].Timeouts.RequestMS = 2500
+		}
+		if cfg.Tenants[i].Protection.MaxConcurrentRequests == 0 {
+			cfg.Tenants[i].Protection.MaxConcurrentRequests = 8
 		}
 	}
 }
@@ -204,6 +214,9 @@ func Validate(cfg *Config) error {
 		validateSecretRef(&problems, prefix+".authrim.audit_hash_secret_ref", tenant.Authrim.AuditHashSecretRef)
 		validateLDAP(&problems, prefix+".ldap", tenant.LDAP)
 		validateTimeouts(&problems, prefix+".timeouts", tenant.Timeouts)
+		if tenant.Protection.MaxConcurrentRequests <= 0 {
+			problems = append(problems, prefix+".protection.max_concurrent_requests must be positive")
+		}
 	}
 
 	if len(problems) > 0 {
@@ -235,6 +248,30 @@ func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 	}
 	if len(ldap.Attributes) == 0 {
 		*problems = append(*problems, prefix+".attributes must contain at least one attribute")
+	}
+	validateUsername(problems, prefix+".username", ldap.Username)
+}
+
+func validateUsername(problems *[]string, prefix string, username UsernameConfig) {
+	allowedFormats := map[string]struct{}{
+		"local_part": {},
+		"email":      {},
+		"upn":        {},
+	}
+	for _, format := range username.AllowedFormats {
+		if _, ok := allowedFormats[format]; !ok {
+			*problems = append(*problems, prefix+".allowed_formats contains unsupported format "+format)
+		}
+	}
+	switch username.Normalization.Unicode {
+	case "", "NFKC":
+	default:
+		*problems = append(*problems, prefix+".normalization.unicode must be empty or NFKC")
+	}
+	switch username.Normalization.Case {
+	case "", "lower":
+	default:
+		*problems = append(*problems, prefix+".normalization.case must be empty or lower")
 	}
 }
 

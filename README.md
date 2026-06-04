@@ -24,8 +24,10 @@ Current implementation slice:
 - HMAC canonical request verifier with active/previous key support
 - `POST /v1/auth/verify-password`
 - local structured audit events with redacted username hashing
+- username preprocessing
+- connector concurrency protection hook
 
-OpenLDAP integration tests and hardening are next.
+OpenLDAP integration tests are next.
 
 ## Local Development
 

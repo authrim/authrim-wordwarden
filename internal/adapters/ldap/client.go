@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/authrim/authrim-wordwarden/internal/core/directory"
+	usernamecore "github.com/authrim/authrim-wordwarden/internal/core/username"
 	"github.com/authrim/authrim-wordwarden/internal/ports/config"
 	"github.com/go-ldap/ldap/v3"
 )
@@ -48,15 +49,19 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 	if request.Username == "" {
 		return result, nil
 	}
+	processed, err := usernamecore.Preprocess(request.Username, c.config.Username)
+	if err != nil {
+		return result, err
+	}
 
-	userDN, err := c.resolveUser(conn, request.Username)
+	userDN, err := c.resolveUser(conn, processed.Value)
 	if err != nil {
 		return result, err
 	}
 	result.UserResolved = true
 	result.Subject = directory.Subject{
 		DirectoryID: userDN,
-		Username:    request.Username,
+		Username:    processed.Value,
 	}
 
 	if request.TestPassword {
@@ -80,7 +85,15 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		return directory.VerifyPasswordResult{}, normalizeLDAPError(err)
 	}
 
-	user, err := c.resolveUserWithAttributes(conn, request.Username, request.AttributeNames)
+	processed, err := usernamecore.Preprocess(request.Username, c.config.Username)
+	if err != nil {
+		return directory.VerifyPasswordResult{
+			Success: false,
+			Reason:  "invalid_credentials",
+		}, nil
+	}
+
+	user, err := c.resolveUserWithAttributes(conn, processed.Value, request.AttributeNames)
 	if err != nil {
 		if err == directory.ErrUserNotFound {
 			return directory.VerifyPasswordResult{
@@ -105,7 +118,7 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		Success: true,
 		Subject: directory.Subject{
 			DirectoryID: user.dn,
-			Username:    request.Username,
+			Username:    processed.Value,
 		},
 		Attributes: user.attributes,
 	}, nil

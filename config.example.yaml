@@ -33,6 +33,10 @@ tenants:
           - local_part
           - email
           - upn
+        allowed_domains:
+          - example.com
+        allowed_upn_suffixes:
+          - example.com
         normalization:
           trim: true
           unicode: "NFKC"
@@ -52,3 +56,5 @@ tenants:
       ldap_bind_ms: 1500
       ldap_search_ms: 1000
       request_ms: 2500
+    protection:
+      max_concurrent_requests: 8

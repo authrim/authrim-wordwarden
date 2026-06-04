@@ -248,11 +248,12 @@ func buildTenantRuntimes(ctx context.Context, cfg *config.Config) (map[string]ht
 		}
 
 		runtimes[tenant.ConnectorID] = httpapi.TenantRuntime{
-			TenantID:        tenant.TenantID,
-			ConnectorID:     tenant.ConnectorID,
-			HMACVerifier:    hmacadapter.NewVerifier(keySet),
-			Directory:       ldapadapter.NewClient(tenant.LDAP, string(bindPassword), tenant.Timeouts),
-			AuditHashSecret: auditHashSecret,
+			TenantID:         tenant.TenantID,
+			ConnectorID:      tenant.ConnectorID,
+			HMACVerifier:     hmacadapter.NewVerifier(keySet),
+			Directory:        ldapadapter.NewClient(tenant.LDAP, string(bindPassword), tenant.Timeouts),
+			AuditHashSecret:  auditHashSecret,
+			ConcurrencyLimit: tenant.Protection.MaxConcurrentRequests,
 		}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,28 +169,89 @@ func TestVerifyPasswordWritesRedactedAuditEvent(t *testing.T) {
 	}
 }
 
+func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	handler := newTestHandlerWithRuntime(TenantRuntime{
+		TenantID:         "tenant-a",
+		ConnectorID:      "ww_tenant_a",
+		HMACVerifier:     testVerifier(),
+		Directory:        blockingDirectory{started: started, release: release},
+		AuditHashSecret:  []byte("audit-secret"),
+		ConcurrencyLimit: 1,
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req := signedVerifyPasswordRequest(t, `{
+			"request_id":"req_123",
+			"tenant_id":"tenant-a",
+			"connector_id":"ww_tenant_a",
+			"username":"alice",
+			"password":"correct"
+		}`, "nonce_123", []byte("active-secret"))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("first status = %d body = %s", rec.Code, rec.Body.String())
+		}
+	}()
+
+	<-started
+
+	body := `{
+		"request_id":"req_456",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`
+	req := signedVerifyPasswordRequest(t, body, "nonce_456", []byte("active-secret"))
+	req.Header.Set(hmacadapter.HeaderRequestID, "req_456")
+	resignRequest(t, req, []byte(body), []byte("active-secret"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	close(release)
+	wg.Wait()
+}
+
 func newTestHandler() http.Handler {
 	return newTestHandlerWithAudit(audit.DiscardSink{})
 }
 
 func newTestHandlerWithAudit(sink audit.Sink) http.Handler {
-	now := fixedHMACTime()
-	verifier := hmacadapter.NewVerifier(hmacadapter.KeySet{
-		Active: hmacadapter.Key{KID: "kid-active", Secret: []byte("active-secret")},
-	}).WithClock(func() time.Time { return now })
-
 	return NewHandler("test-version", HandlerOptions{
 		Tenants: map[string]TenantRuntime{
 			"ww_tenant_a": {
 				TenantID:        "tenant-a",
 				ConnectorID:     "ww_tenant_a",
-				HMACVerifier:    verifier,
+				HMACVerifier:    testVerifier(),
 				Directory:       fakeDirectory{},
 				AuditHashSecret: []byte("audit-secret"),
 			},
 		},
 		Audit: sink,
 	})
+}
+
+func newTestHandlerWithRuntime(runtime TenantRuntime) http.Handler {
+	return NewHandler("test-version", HandlerOptions{
+		Tenants: map[string]TenantRuntime{"ww_tenant_a": runtime},
+		Audit:   audit.DiscardSink{},
+	})
+}
+
+func testVerifier() hmacadapter.Verifier {
+	now := fixedHMACTime()
+	return hmacadapter.NewVerifier(hmacadapter.KeySet{
+		Active: hmacadapter.Key{KID: "kid-active", Secret: []byte("active-secret")},
+	}).WithClock(func() time.Time { return now })
 }
 
 func signedVerifyPasswordRequest(t *testing.T, body string, nonce string, secret []byte) *http.Request {
@@ -204,18 +266,23 @@ func signedVerifyPasswordRequest(t *testing.T, body string, nonce string, secret
 	req.Header.Set(hmacadapter.HeaderNonce, nonce)
 	req.Header.Set(hmacadapter.HeaderSignedHeaders, "content-type;x-authrim-connector-id;x-authrim-key-id;x-authrim-request-id;x-authrim-timestamp;x-authrim-nonce")
 
+	resignRequest(t, req, []byte(body), secret)
+	return req
+}
+
+func resignRequest(t *testing.T, req *http.Request, body []byte, secret []byte) {
+	t.Helper()
 	canonical, err := hmacadapter.CanonicalRequest(
 		req,
-		[]byte(body),
+		body,
 		[]string{"content-type", "x-authrim-connector-id", "x-authrim-key-id", "x-authrim-nonce", "x-authrim-request-id", "x-authrim-timestamp"},
 		req.Header.Get(hmacadapter.HeaderTimestamp),
-		nonce,
+		req.Header.Get(hmacadapter.HeaderNonce),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set(hmacadapter.HeaderSignature, hmacadapter.SignCanonical(canonical, secret))
-	return req
 }
 
 func fixedHMACTime() time.Time {
@@ -226,6 +293,21 @@ type fakeDirectory struct{}
 
 func (fakeDirectory) TestConnection(context.Context, directory.TestConnectionRequest) (directory.TestConnectionResult, error) {
 	return directory.TestConnectionResult{}, nil
+}
+
+type blockingDirectory struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (blockingDirectory) TestConnection(context.Context, directory.TestConnectionRequest) (directory.TestConnectionResult, error) {
+	return directory.TestConnectionResult{}, nil
+}
+
+func (d blockingDirectory) VerifyPassword(context.Context, directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
+	close(d.started)
+	<-d.release
+	return directory.VerifyPasswordResult{Success: true}, nil
 }
 
 type memoryAuditSink struct {
