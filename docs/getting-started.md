@@ -42,8 +42,8 @@ Wordwarden is usually not the right fit when:
 - LDAP/AD cannot be reached from any service host, container host, tunnel, or
   private network path.
 - Operators cannot maintain a connector process, logs, certificates, and secrets.
-- The deployment requires full group mapping, directory failover, referral
-  handling, or account-status normalization on day one.
+- The deployment requires advanced group mapping, complex high availability,
+  automatic referral chasing, or custom account-status policy on day one.
 - The desired model is purely upstream SAML/OIDC federation into Authrim. In that
   case, connecting Authrim to the upstream IdP may be simpler than introducing a
   directory password connector.

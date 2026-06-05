@@ -150,6 +150,16 @@ Common causes:
     directory errors
   - confirm Authrim and Wordwarden share the same tenant id, connector id, `kid`,
     and active secret
+- AD account status:
+  - AD `data 532` is normalized to `policy_required/password_expired`
+  - AD `data 773` is normalized to `policy_required/must_change_password`
+  - AD `data 533` is normalized to `failure/account_disabled`
+  - AD `data 775` is normalized to `failure/account_locked`
+- Referrals:
+  - `directory_referral` means the directory returned a referral and Wordwarden
+    did not chase it automatically
+  - check `base_dn`, `user_filter`, and referral policy before enabling a broader
+    directory path
 
 Do not use `/healthz` as proof that LDAP login works. `/healthz` is intentionally
 shallow.

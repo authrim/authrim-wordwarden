@@ -356,17 +356,42 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 		h.recordStorm(connectorID, stormKindDirectoryError)
 		return
 	}
-	h.resetStorm(connectorID, stormKindDirectoryError)
 
-	if !result.Success {
+	credentialResult := result.CredentialResult()
+	if credentialResult == directory.CredentialResultSourceUnavailable {
+		code := result.SafeReason()
+		h.emit(req, audit.Event{
+			EventType:    audit.EventVerifyError,
+			TenantID:     requestBody.TenantID,
+			ConnectorID:  requestBody.ConnectorID,
+			RequestID:    requestBody.RequestID,
+			KeyID:        verification.KeyID,
+			Result:       "error",
+			ErrorCode:    code,
+			Retryable:    true,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: usernameHash(runtime.AuditHashSecret, requestBody.Username),
+		})
+		writeError(w, http.StatusServiceUnavailable, errorResponse{
+			RequestID:   requestBody.RequestID,
+			TenantID:    requestBody.TenantID,
+			ConnectorID: requestBody.ConnectorID,
+			Error:       errorPayload{Code: code, Retryable: true},
+		})
+		h.recordStorm(connectorID, stormKindDirectoryError)
+		return
+	}
+	h.resetStorm(connectorID, stormKindDirectoryError)
+	if credentialResult != directory.CredentialResultSuccess {
+		reason := result.SafeReason()
 		h.emit(req, audit.Event{
 			EventType:       audit.EventVerifyFailure,
 			TenantID:        requestBody.TenantID,
 			ConnectorID:     requestBody.ConnectorID,
 			RequestID:       requestBody.RequestID,
 			KeyID:           verification.KeyID,
-			Result:          "failure",
-			Reason:          "invalid_credentials",
+			Result:          string(credentialResult),
+			Reason:          reason,
 			Retryable:       false,
 			LatencyMS:       latencyMS(start),
 			DirectoryStatus: "ok",
@@ -376,8 +401,8 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			RequestID:       requestBody.RequestID,
 			TenantID:        requestBody.TenantID,
 			ConnectorID:     requestBody.ConnectorID,
-			Result:          "failure",
-			Reason:          "invalid_credentials",
+			Result:          string(credentialResult),
+			Reason:          reason,
 			DirectoryStatus: "ok",
 		})
 		return
@@ -509,6 +534,8 @@ func directoryErrorCode(err error) string {
 		return "directory_tls_error"
 	case errors.Is(err, directory.ErrDirectoryUnavailable):
 		return "directory_unavailable"
+	case errors.Is(err, directory.ErrDirectoryReferral):
+		return "directory_referral"
 	default:
 		return "directory_error"
 	}

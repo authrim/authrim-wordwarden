@@ -122,6 +122,61 @@ func TestVerifyPasswordInvalidCredentials(t *testing.T) {
 	}
 }
 
+func TestVerifyPasswordPolicyRequired(t *testing.T) {
+	req := signedVerifyPasswordRequest(t, `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"must-change",
+		"attribute_names":["uid"]
+	}`, "nonce_123", []byte("active-secret"))
+
+	rec := httptest.NewRecorder()
+	newTestHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var body verifyPasswordResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if body.Result != "policy_required" || body.Reason != "must_change_password" {
+		t.Fatalf("body = %#v", body)
+	}
+	if body.Subject != nil {
+		t.Fatalf("policy_required response must not include subject: %#v", body.Subject)
+	}
+}
+
+func TestVerifyPasswordSourceUnavailable(t *testing.T) {
+	req := signedVerifyPasswordRequest(t, `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"source-down",
+		"attribute_names":["uid"]
+	}`, "nonce_123", []byte("active-secret"))
+
+	rec := httptest.NewRecorder()
+	newTestHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var body errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if body.Error.Code != "directory_unavailable" || !body.Error.Retryable {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func TestVerifyPasswordRejectsBadSignature(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
@@ -497,6 +552,57 @@ func TestVerifyPasswordLimitsDirectoryErrorStorm(t *testing.T) {
 	}
 }
 
+func TestVerifyPasswordLimitsSourceUnavailableStorm(t *testing.T) {
+	handler := newTestHandlerWithRuntime(TenantRuntime{
+		TenantID:        "tenant-a",
+		ConnectorID:     "ww_tenant_a",
+		HMACVerifier:    testVerifier(),
+		Directory:       sourceUnavailableDirectory{},
+		AuditHashSecret: []byte("audit-secret"),
+		StormProtection: StormProtectionPolicy{
+			DirectoryErrorLimit: 1,
+			WindowMS:            60000,
+			BlockMS:             60000,
+		},
+	})
+
+	firstBody := `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`
+	firstReq := signedVerifyPasswordRequestWithID(t, firstBody, "req_123", "nonce_123", []byte("active-secret"))
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first status = %d body = %s", firstRec.Code, firstRec.Body.String())
+	}
+
+	secondBody := `{
+		"request_id":"req_456",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"correct"
+	}`
+	secondReq := signedVerifyPasswordRequestWithID(t, secondBody, "req_456", "nonce_456", []byte("active-secret"))
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("second status = %d body = %s", secondRec.Code, secondRec.Body.String())
+	}
+
+	var body errorResponse
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if body.Error.Code != "directory_error_storm_limited" || !body.Error.Retryable {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func assertErrorCode(t *testing.T, raw []byte, want string) {
 	t.Helper()
 
@@ -621,6 +727,16 @@ func (d errorDirectory) VerifyPassword(context.Context, directory.VerifyPassword
 	return directory.VerifyPasswordResult{}, d.err
 }
 
+type sourceUnavailableDirectory struct{}
+
+func (sourceUnavailableDirectory) TestConnection(context.Context, directory.TestConnectionRequest) (directory.TestConnectionResult, error) {
+	return directory.TestConnectionResult{}, nil
+}
+
+func (sourceUnavailableDirectory) VerifyPassword(context.Context, directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
+	return directory.SourceUnavailableVerification(""), nil
+}
+
 type countingDirectory struct {
 	calls int
 }
@@ -658,8 +774,14 @@ func (s *memoryAuditSink) WriteEvent(_ context.Context, event audit.Event) error
 }
 
 func (fakeDirectory) VerifyPassword(_ context.Context, request directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
+	if request.Password == "source-down" {
+		return directory.SourceUnavailableVerification(""), nil
+	}
+	if request.Password == "must-change" {
+		return directory.PolicyRequiredVerification(directory.ReasonMustChangePassword), nil
+	}
 	if request.Password != "correct" {
-		return directory.VerifyPasswordResult{Success: false, Reason: "invalid_credentials"}, nil
+		return directory.FailedVerification(directory.ReasonInvalidCredentials), nil
 	}
 	attrs := map[string][]string{}
 	for _, name := range request.AttributeNames {
@@ -670,12 +792,11 @@ func (fakeDirectory) VerifyPassword(_ context.Context, request directory.VerifyP
 			attrs[name] = []string{"alice@example.com"}
 		}
 	}
-	return directory.VerifyPasswordResult{
-		Success: true,
-		Subject: directory.Subject{
+	return directory.SuccessfulVerification(
+		directory.Subject{
 			DirectoryID: "uid=alice,ou=People,dc=example,dc=com",
 			Username:    request.Username,
 		},
-		Attributes: attrs,
-	}, nil
+		attrs,
+	), nil
 }

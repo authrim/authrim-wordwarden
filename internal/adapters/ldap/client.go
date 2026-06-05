@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,22 +23,30 @@ type Client struct {
 	config       config.LDAPConfig
 	bindPassword string
 	timeouts     config.TimeoutConfig
+	pool         *connectionPool
 }
 
 func NewClient(cfg config.LDAPConfig, bindPassword string, timeouts config.TimeoutConfig) Client {
-	return Client{
+	client := Client{
 		config:       cfg,
 		bindPassword: bindPassword,
 		timeouts:     timeouts,
 	}
+	if cfg.Pool.MaxIdle > 0 {
+		client.pool = newConnectionPool(cfg.Pool.MaxIdle)
+	}
+	return client
 }
 
 func (c Client) TestConnection(ctx context.Context, request directory.TestConnectionRequest) (directory.TestConnectionResult, error) {
-	conn, err := c.dial(ctx, request.AllowInsecure)
+	conn, err := c.acquireConn(ctx, request.AllowInsecure)
 	if err != nil {
 		return directory.TestConnectionResult{}, err
 	}
-	defer conn.Close()
+	reusable := false
+	defer func() {
+		c.releaseConn(conn, reusable)
+	}()
 
 	result := directory.TestConnectionResult{
 		TLSVerified: !request.AllowInsecure,
@@ -47,6 +58,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 				return directory.TestConnectionResult{}, err
 			}
 			result.ServiceBound = true
+			reusable = true
 		}
 		return result, nil
 	}
@@ -78,6 +90,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 				return result, err
 			}
 			result.PasswordOK = true
+			reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 		}
 	case "dn_template":
 		userDN := c.userDNFromTemplate(processed.Value)
@@ -92,6 +105,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 				return result, err
 			}
 			result.PasswordOK = true
+			reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 		}
 	case "direct_bind":
 		result.UserResolved = true
@@ -105,6 +119,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 				return result, err
 			}
 			result.PasswordOK = true
+			reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 		}
 	default:
 		return result, fmt.Errorf("unsupported ldap lookup_mode %q", c.config.LookupMode)
@@ -115,25 +130,22 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 
 func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPasswordRequest) (directory.VerifyPasswordResult, error) {
 	if request.Password == "" {
-		return directory.VerifyPasswordResult{
-			Success: false,
-			Reason:  "invalid_credentials",
-		}, nil
+		return directory.FailedVerification(directory.ReasonInvalidCredentials), nil
 	}
 
 	processed, err := usernamecore.Preprocess(request.Username, c.config.Username)
 	if err != nil {
-		return directory.VerifyPasswordResult{
-			Success: false,
-			Reason:  "invalid_credentials",
-		}, nil
+		return directory.FailedVerification(directory.ReasonInvalidCredentials), nil
 	}
 
-	conn, err := c.dial(ctx, false)
+	conn, err := c.acquireConn(ctx, false)
 	if err != nil {
 		return directory.VerifyPasswordResult{}, err
 	}
-	defer conn.Close()
+	reusable := false
+	defer func() {
+		c.releaseConn(conn, reusable)
+	}()
 
 	switch c.lookupMode() {
 	case "search_then_bind":
@@ -144,40 +156,31 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		user, err := c.resolveUserWithAttributes(ctx, conn, processed.Value, request.AttributeNames)
 		if err != nil {
 			if err == directory.ErrUserNotFound {
-				return directory.VerifyPasswordResult{
-					Success: false,
-					Reason:  "invalid_credentials",
-				}, nil
+				return directory.FailedVerification(directory.ReasonInvalidCredentials), nil
 			}
 			return directory.VerifyPasswordResult{}, err
 		}
 
 		if err := c.bindUser(ctx, conn, user.dn, request.Password); err != nil {
-			if err == directory.ErrInvalidCredentials {
-				return directory.VerifyPasswordResult{
-					Success: false,
-					Reason:  "invalid_credentials",
-				}, nil
+			if result, ok := credentialVerdictFromBindError(err); ok {
+				return result, nil
 			}
 			return directory.VerifyPasswordResult{}, err
 		}
+		reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 
-		return directory.VerifyPasswordResult{
-			Success: true,
-			Subject: directory.Subject{
+		return directory.SuccessfulVerification(
+			directory.Subject{
 				DirectoryID: user.dn,
 				Username:    processed.Value,
 			},
-			Attributes: user.attributes,
-		}, nil
+			user.attributes,
+		), nil
 	case "dn_template":
 		userDN := c.userDNFromTemplate(processed.Value)
 		if err := c.bindUser(ctx, conn, userDN, request.Password); err != nil {
-			if err == directory.ErrInvalidCredentials {
-				return directory.VerifyPasswordResult{
-					Success: false,
-					Reason:  "invalid_credentials",
-				}, nil
+			if result, ok := credentialVerdictFromBindError(err); ok {
+				return result, nil
 			}
 			return directory.VerifyPasswordResult{}, err
 		}
@@ -186,22 +189,19 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		if err != nil {
 			return directory.VerifyPasswordResult{}, err
 		}
+		reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 
-		return directory.VerifyPasswordResult{
-			Success: true,
-			Subject: directory.Subject{
+		return directory.SuccessfulVerification(
+			directory.Subject{
 				DirectoryID: userDN,
 				Username:    processed.Value,
 			},
-			Attributes: attributes,
-		}, nil
+			attributes,
+		), nil
 	case "direct_bind":
 		if err := c.bindUser(ctx, conn, processed.Value, request.Password); err != nil {
-			if err == directory.ErrInvalidCredentials {
-				return directory.VerifyPasswordResult{
-					Success: false,
-					Reason:  "invalid_credentials",
-				}, nil
+			if result, ok := credentialVerdictFromBindError(err); ok {
+				return result, nil
 			}
 			return directory.VerifyPasswordResult{}, err
 		}
@@ -210,15 +210,15 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		if err != nil {
 			return directory.VerifyPasswordResult{}, err
 		}
+		reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 
-		return directory.VerifyPasswordResult{
-			Success: true,
-			Subject: directory.Subject{
+		return directory.SuccessfulVerification(
+			directory.Subject{
 				DirectoryID: directoryID,
 				Username:    processed.Value,
 			},
-			Attributes: attributes,
-		}, nil
+			attributes,
+		), nil
 	default:
 		return directory.VerifyPasswordResult{}, fmt.Errorf("unsupported ldap lookup_mode %q", c.config.LookupMode)
 	}
@@ -266,7 +266,7 @@ func (c Client) userDNFromTemplate(username string) string {
 }
 
 func (c Client) resolveAttributesAfterSuccessfulBind(ctx context.Context, conn *ldap.Conn, userDN string, username string, requested []string) (map[string][]string, error) {
-	searchAttributes := requestedAttributes(requested, c.config.Attributes)
+	searchAttributes := c.searchAttributes(requested)
 	if len(searchAttributes) == 0 || !c.serviceSearchAvailable() {
 		return nil, nil
 	}
@@ -275,7 +275,7 @@ func (c Client) resolveAttributesAfterSuccessfulBind(ctx context.Context, conn *
 		return nil, err
 	}
 
-	attributes, err := c.resolveAttributesByDN(ctx, conn, userDN, searchAttributes)
+	attributes, err := c.resolveAttributesByDN(ctx, conn, userDN, requested)
 	if err == nil {
 		return attributes, nil
 	}
@@ -295,7 +295,7 @@ func (c Client) resolveAttributesAfterSuccessfulBind(ctx context.Context, conn *
 
 func (c Client) resolveDirectBindAttributes(ctx context.Context, conn *ldap.Conn, username string, requested []string) (map[string][]string, string, error) {
 	directoryID := username
-	if len(requestedAttributes(requested, c.config.Attributes)) == 0 || !c.serviceSearchAvailable() {
+	if len(c.searchAttributes(requested)) == 0 || !c.serviceSearchAvailable() {
 		return nil, directoryID, nil
 	}
 
@@ -313,11 +313,12 @@ func (c Client) resolveDirectBindAttributes(ctx context.Context, conn *ldap.Conn
 	return user.attributes, user.dn, nil
 }
 
-func (c Client) resolveAttributesByDN(ctx context.Context, conn *ldap.Conn, dn string, attributes []string) (map[string][]string, error) {
+func (c Client) resolveAttributesByDN(ctx context.Context, conn *ldap.Conn, dn string, requested []string) (map[string][]string, error) {
 	timeout, err := c.setOperationTimeout(ctx, conn, c.timeouts.LDAPSearchMS, time.Second)
 	if err != nil {
 		return nil, err
 	}
+	searchAttributes := c.searchAttributes(requested)
 	searchRequest := ldap.NewSearchRequest(
 		dn,
 		ldap.ScopeBaseObject,
@@ -326,7 +327,7 @@ func (c Client) resolveAttributesByDN(ctx context.Context, conn *ldap.Conn, dn s
 		ldapTimeLimitSeconds(timeout),
 		false,
 		"(objectClass=*)",
-		attributes,
+		searchAttributes,
 		nil,
 	)
 
@@ -338,35 +339,143 @@ func (c Client) resolveAttributesByDN(ctx context.Context, conn *ldap.Conn, dn s
 		return nil, directory.ErrUserNotFound
 	}
 
-	return entryAttributes(result.Entries[0], attributes), nil
+	return c.entryAttributes(result.Entries[0], requested), nil
 }
 
 func (c Client) dial(ctx context.Context, allowInsecure bool) (*ldap.Conn, error) {
+	var lastErr error
+	var tlsErr error
+	for _, endpoint := range c.endpointURLs() {
+		conn, err := c.dialEndpoint(ctx, endpoint, allowInsecure)
+		if err == nil {
+			return conn, nil
+		}
+		if errors.Is(err, directory.ErrDirectoryTLS) && tlsErr == nil {
+			tlsErr = err
+		}
+		lastErr = err
+	}
+	if tlsErr != nil {
+		return nil, tlsErr
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no LDAP endpoints configured")
+	}
+	return nil, fmt.Errorf("%w: %v", directory.ErrDirectoryUnavailable, lastErr)
+}
+
+func (c Client) acquireConn(ctx context.Context, allowInsecure bool) (*ldap.Conn, error) {
+	if allowInsecure || c.pool == nil {
+		return c.dial(ctx, allowInsecure)
+	}
+	if conn, ok := c.pool.get(); ok {
+		if err := c.validatePooledConn(ctx, conn); err == nil {
+			return conn, nil
+		}
+		conn.Close()
+	}
+	return c.dial(ctx, false)
+}
+
+func (c Client) releaseConn(conn *ldap.Conn, reusable bool) {
+	if conn == nil {
+		return
+	}
+	if reusable && c.pool != nil && c.pool.put(conn) {
+		return
+	}
+	conn.Close()
+}
+
+func (c Client) restoreServiceBindForReuse(ctx context.Context, conn *ldap.Conn) error {
+	if c.pool == nil || !c.serviceSearchAvailable() {
+		return fmt.Errorf("connection is not reusable without service bind settings")
+	}
+	return c.bindService(ctx, conn)
+}
+
+func (c Client) validatePooledConn(ctx context.Context, conn *ldap.Conn) error {
+	if !c.serviceSearchAvailable() {
+		return fmt.Errorf("pooled connection requires service bind settings")
+	}
+	return c.bindService(ctx, conn)
+}
+
+type connectionPool struct {
+	idle chan *ldap.Conn
+}
+
+func newConnectionPool(maxIdle int) *connectionPool {
+	return &connectionPool{idle: make(chan *ldap.Conn, maxIdle)}
+}
+
+func (p *connectionPool) get() (*ldap.Conn, bool) {
+	select {
+	case conn := <-p.idle:
+		return conn, true
+	default:
+		return nil, false
+	}
+}
+
+func (p *connectionPool) put(conn *ldap.Conn) bool {
+	select {
+	case p.idle <- conn:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c Client) endpointURLs() []string {
+	result := make([]string, 0, 1+len(c.config.URLs))
+	if c.config.URL != "" {
+		result = append(result, c.config.URL)
+	}
+	result = append(result, c.config.URLs...)
+	return result
+}
+
+func (c Client) dialEndpoint(ctx context.Context, endpoint string, allowInsecure bool) (*ldap.Conn, error) {
 	timeout, err := timeoutWithinContext(ctx, c.timeouts.LDAPConnectMS, 500*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
 	dialer := &net.Dialer{Timeout: timeout}
-	tlsConfig, err := c.tlsConfig(allowInsecure)
+	tlsConfig, err := c.tlsConfig(endpoint, allowInsecure)
 	if err != nil {
 		return nil, err
 	}
 
-	conn, err := ldap.DialURL(
-		c.config.URL,
+	if c.config.TLS.StartTLS {
+		conn, err := ldap.DialURL(endpoint, ldap.DialWithDialer(dialer))
+		if err != nil {
+			return nil, err
+		}
+		if err := conn.StartTLS(tlsConfig); err != nil {
+			conn.Close()
+			return nil, normalizeLDAPError(err)
+		}
+		return conn, nil
+	}
+
+	return ldap.DialURL(
+		endpoint,
 		ldap.DialWithDialer(dialer),
 		ldap.DialWithTLSConfig(tlsConfig),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", directory.ErrDirectoryUnavailable, err)
-	}
-	return conn, nil
 }
 
-func (c Client) tlsConfig(allowInsecure bool) (*tls.Config, error) {
+func (c Client) tlsConfig(endpoint string, allowInsecure bool) (*tls.Config, error) {
+	serverName := c.config.TLS.ServerName
+	if serverName == "" {
+		if parsed, err := url.Parse(endpoint); err == nil {
+			serverName = parsed.Hostname()
+		}
+	}
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
-		ServerName:         c.config.TLS.ServerName,
+		ServerName:         serverName,
 		InsecureSkipVerify: allowInsecure,
 	}
 
@@ -416,7 +525,7 @@ func (c Client) resolveUserWithAttributes(ctx context.Context, conn *ldap.Conn, 
 	}
 	escapedUsername := ldap.EscapeFilter(username)
 	filter := strings.ReplaceAll(c.config.UserFilter, "{username}", escapedUsername)
-	searchAttributes := requestedAttributes(attributes, c.config.Attributes)
+	searchAttributes := c.searchAttributes(attributes)
 	searchRequest := ldap.NewSearchRequest(
 		c.config.BaseDN,
 		ldap.ScopeWholeSubtree,
@@ -440,7 +549,7 @@ func (c Client) resolveUserWithAttributes(ctx context.Context, conn *ldap.Conn, 
 
 	return resolvedUser{
 		dn:         entry.DN,
-		attributes: entryAttributes(entry, searchAttributes),
+		attributes: c.entryAttributes(entry, attributes),
 	}, nil
 }
 
@@ -480,7 +589,22 @@ func requestedAttributes(requested []string, allowed []string) []string {
 	return result
 }
 
-func entryAttributes(entry *ldap.Entry, names []string) map[string][]string {
+func (c Client) searchAttributes(requested []string) []string {
+	attrs := requestedAttributes(requested, c.config.Attributes)
+	if !c.config.Groups.Enabled || !requestedAttributeIncludes(requested, c.config.Groups.ResponseAttribute) {
+		return attrs
+	}
+	if c.config.Groups.MemberAttribute == "" {
+		return attrs
+	}
+	if stringSliceContains(attrs, c.config.Groups.MemberAttribute) {
+		return attrs
+	}
+	return append(attrs, c.config.Groups.MemberAttribute)
+}
+
+func (c Client) entryAttributes(entry *ldap.Entry, requested []string) map[string][]string {
+	names := requestedAttributes(requested, c.config.Attributes)
 	attrs := make(map[string][]string)
 	for _, name := range names {
 		values := entry.GetAttributeValues(name)
@@ -488,17 +612,84 @@ func entryAttributes(entry *ldap.Entry, names []string) map[string][]string {
 			attrs[name] = values
 		}
 	}
+	if c.config.Groups.Enabled && requestedAttributeIncludes(requested, c.config.Groups.ResponseAttribute) {
+		values := entry.GetAttributeValues(c.config.Groups.MemberAttribute)
+		if len(values) > 0 {
+			attrs[c.config.Groups.ResponseAttribute] = values
+		}
+	}
 	return attrs
+}
+
+func requestedAttributeIncludes(requested []string, name string) bool {
+	if name == "" {
+		return false
+	}
+	return stringSliceContains(requested, name)
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeLDAPError(err error) error {
 	if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
+		if mapped, ok := normalizeADInvalidCredentialsError(err); ok {
+			return mapped
+		}
 		return directory.ErrInvalidCredentials
 	}
 	if ldap.IsErrorWithCode(err, ldap.LDAPResultConnectError) {
 		return directory.ErrDirectoryUnavailable
 	}
+	if ldap.IsErrorWithCode(err, ldap.LDAPResultReferral) {
+		return directory.ErrDirectoryReferral
+	}
 	return err
+}
+
+func credentialVerdictFromBindError(err error) (directory.VerifyPasswordResult, bool) {
+	switch {
+	case errors.Is(err, directory.ErrInvalidCredentials):
+		return directory.FailedVerification(directory.ReasonInvalidCredentials), true
+	case errors.Is(err, directory.ErrAccountDisabled):
+		return directory.FailedVerification(directory.ReasonAccountDisabled), true
+	case errors.Is(err, directory.ErrAccountLocked):
+		return directory.FailedVerification(directory.ReasonAccountLocked), true
+	case errors.Is(err, directory.ErrPasswordExpired):
+		return directory.PolicyRequiredVerification(directory.ReasonPasswordExpired), true
+	case errors.Is(err, directory.ErrMustChangePassword):
+		return directory.PolicyRequiredVerification(directory.ReasonMustChangePassword), true
+	default:
+		return directory.VerifyPasswordResult{}, false
+	}
+}
+
+var adDataCodePattern = regexp.MustCompile(`(?i)\bdata\s+([0-9a-f]+)\b`)
+
+func normalizeADInvalidCredentialsError(err error) (error, bool) {
+	matches := adDataCodePattern.FindStringSubmatch(err.Error())
+	if len(matches) != 2 {
+		return nil, false
+	}
+
+	switch strings.ToLower(matches[1]) {
+	case "532":
+		return directory.ErrPasswordExpired, true
+	case "533":
+		return directory.ErrAccountDisabled, true
+	case "773":
+		return directory.ErrMustChangePassword, true
+	case "775":
+		return directory.ErrAccountLocked, true
+	default:
+		return nil, false
+	}
 }
 
 func (c Client) setOperationTimeout(ctx context.Context, conn *ldap.Conn, configuredMS int, fallback time.Duration) (time.Duration, error) {

@@ -86,7 +86,7 @@ The `endpoint_url` must use HTTPS unless it is a loopback development endpoint.
 - Rotate HMAC secrets with active/previous key ids.
 - Add mTLS at the reverse proxy or direct listener when the deployment can
   operate client certificates reliably.
-- Use LDAPS or StartTLS-capable deployment once StartTLS is implemented.
+- Use LDAPS or explicit StartTLS with LDAP TLS verification enabled.
 - Keep LDAP TLS certificate verification enabled.
 - Restrict firewall ingress to known Authrim egress ranges when that is
   operationally possible.

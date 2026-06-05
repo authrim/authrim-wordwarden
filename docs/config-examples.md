@@ -2,8 +2,8 @@
 
 This document contains practical Authrim Wordwarden configuration examples for
 real deployments. The examples use the current Alpha schema and avoid features
-that are planned but not implemented yet, such as StartTLS, directory failover,
-and advanced group mapping.
+that are planned but not implemented yet, such as advanced group mapping and
+automatic referral chasing.
 
 Use `docs/configuration.md` for field-level behavior and validation rules.
 
@@ -339,6 +339,84 @@ tenants:
         - mail
         - displayName
         - userPrincipalName
+    timeouts:
+      ldap_connect_ms: 500
+      ldap_bind_ms: 1500
+      ldap_search_ms: 1000
+      request_ms: 3000
+    protection:
+      max_concurrent_requests: 8
+      storm_window_ms: 10000
+      storm_block_ms: 30000
+      malformed_request_limit: 20
+      replay_limit: 10
+      directory_error_limit: 5
+```
+
+## Example 5: Failover, StartTLS, Groups, and Pooling
+
+This example shows the M4 production-variation options together. Use this only
+when the directory actually expects StartTLS on `ldap://`.
+
+```yaml
+deployment:
+  mode: "single_tenant"
+
+server:
+  listen: "127.0.0.1:8080"
+  public_base_url: "https://wordwarden.example.edu"
+  tls:
+    enabled: false
+    cert_file_ref: null
+    key_file_ref: null
+
+tenants:
+  - tenant_id: "tenant-a"
+    connector_id: "ww_tenant_a"
+    authrim:
+      hmac_keys:
+        active:
+          kid: "kid_2026_06"
+          secret_ref: "env:AUTHRIM_WORDWARDEN_SECRET_ACTIVE"
+      audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+    ldap:
+      urls:
+        - "ldap://ldap-a.example.edu:389"
+        - "ldap://ldap-b.example.edu:389"
+      tls:
+        verify: true
+        start_tls: true
+        server_name: "ldap.example.edu"
+        ca_file_ref: "file:/etc/authrim-wordwarden/ca/ldap-ca.pem"
+      lookup_mode: "search_then_bind"
+      username:
+        allowed_formats:
+          - local_part
+          - email
+        allowed_domains:
+          - example.edu
+        normalization:
+          trim: true
+          unicode: "NFKC"
+          case: "lower"
+          reject_domain_mismatch: true
+      bind_dn: "cn=authrim-wordwarden,ou=Services,dc=example,dc=edu"
+      bind_password_ref: "env:LDAP_BIND_PASSWORD"
+      base_dn: "dc=example,dc=edu"
+      user_filter: "(uid={username})"
+      filter_template_mode: "builtin_or_template"
+      attributes:
+        - uid
+        - mail
+        - displayName
+      groups:
+        enabled: true
+        member_attribute: "memberOf"
+        response_attribute: "groups"
+      referrals:
+        mode: "disabled"
+      pool:
+        max_idle: 2
     timeouts:
       ldap_connect_ms: 500
       ldap_bind_ms: 1500
