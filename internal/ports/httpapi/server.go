@@ -41,6 +41,11 @@ type healthResponse struct {
 	Version   string `json:"version"`
 }
 
+type versionResponse struct {
+	Connector string `json:"connector"`
+	Version   string `json:"version"`
+}
+
 type handler struct {
 	version string
 	tenants map[string]TenantRuntime
@@ -78,6 +83,12 @@ func NewHandler(version string, options ...HandlerOptions) http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, healthResponse{
 			OK:        true,
+			Connector: "authrim-wordwarden",
+			Version:   version,
+		})
+	})
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, versionResponse{
 			Connector: "authrim-wordwarden",
 			Version:   version,
 		})

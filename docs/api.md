@@ -132,3 +132,27 @@ because they are unauthenticated.
 
 `GET /healthz` is intentionally shallow in Alpha. It returns process status and
 version only; it does not test LDAP reachability.
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "connector": "authrim-wordwarden",
+  "version": "0.1.0"
+}
+```
+
+## Version
+
+`GET /version` returns connector identity and binary version only. It is safe for
+operational inventory checks and does not test LDAP reachability.
+
+Example response:
+
+```json
+{
+  "connector": "authrim-wordwarden",
+  "version": "0.1.0"
+}
+```

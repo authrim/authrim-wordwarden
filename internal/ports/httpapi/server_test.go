@@ -39,6 +39,31 @@ func TestHealthzIsShallow(t *testing.T) {
 	}
 }
 
+func TestVersionEndpoint(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	rec := httptest.NewRecorder()
+
+	NewHandler("test-version").ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if body["connector"] != "authrim-wordwarden" {
+		t.Fatalf("connector = %v", body["connector"])
+	}
+	if body["version"] != "test-version" {
+		t.Fatalf("version = %v", body["version"])
+	}
+	if _, ok := body["directory"]; ok {
+		t.Fatal("version response must not include directory reachability")
+	}
+}
+
 func TestVerifyPasswordSuccess(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",

@@ -5,6 +5,8 @@ rejected, except under the optional `experimental:` namespace.
 
 Configuration changes require a process restart in Alpha.
 
+For deployment-ready templates, see `docs/config-examples.md`.
+
 ## Top Level
 
 ```yaml
