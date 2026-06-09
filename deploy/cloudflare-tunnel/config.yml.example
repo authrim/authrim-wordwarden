@@ -1,0 +1,11 @@
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+
+originRequest:
+  connectTimeout: 10s
+  noTLSVerify: false
+
+ingress:
+  - hostname: wordwarden.example.edu
+    service: http://127.0.0.1:8080
+  - service: http_status:404

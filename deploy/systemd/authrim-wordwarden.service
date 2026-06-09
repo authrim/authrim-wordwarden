@@ -8,16 +8,28 @@ Wants=network-online.target
 Type=simple
 User=wordwarden
 Group=wordwarden
+EnvironmentFile=/etc/authrim-wordwarden/wordwarden.env
 ExecStart=/usr/local/bin/wordwarden --config /etc/authrim-wordwarden/config.yaml serve
 Restart=on-failure
 RestartSec=5s
 
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
 NoNewPrivileges=true
+PrivateDevices=true
 PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
 ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
 ProtectSystem=strict
 ReadOnlyPaths=/etc/authrim-wordwarden
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
 SystemCallArchitectures=native
 
 [Install]

@@ -1,0 +1,39 @@
+services:
+  openldap:
+    image: osixia/openldap:1.5.0
+    command: ["--copy-service"]
+    environment:
+      LDAP_ORGANISATION: "Authrim"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "admin"
+      LDAP_TLS: "true"
+      LDAP_TLS_CRT_FILENAME: "ldap.crt"
+      LDAP_TLS_KEY_FILENAME: "ldap.key"
+      LDAP_TLS_CA_CRT_FILENAME: "ca.crt"
+      LDAP_TLS_VERIFY_CLIENT: "never"
+    ports:
+      - "127.0.0.1:1389:389"
+      - "127.0.0.1:1636:636"
+    volumes:
+      - "../../../test/integration/openldap/certs:/container/service/slapd/assets/certs:ro"
+      - "../../../test/integration/openldap/ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom:ro"
+
+  wordwarden:
+    build:
+      context: "../../.."
+    command: ["--config", "/etc/authrim-wordwarden/config.yaml", "serve"]
+    depends_on:
+      - openldap
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - "./config.yaml:/etc/authrim-wordwarden/config.yaml:ro"
+      - "../../../test/integration/openldap/certs:/etc/authrim-wordwarden/ca:ro"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -60,6 +61,7 @@ type HMACKeyConfig struct {
 
 type LDAPConfig struct {
 	URL                string         `yaml:"url"`
+	URLs               []string       `yaml:"urls"`
 	TLS                LDAPTLSConfig  `yaml:"tls"`
 	LookupMode         string         `yaml:"lookup_mode"`
 	Username           UsernameConfig `yaml:"username"`
@@ -70,12 +72,31 @@ type LDAPConfig struct {
 	UserFilter         string         `yaml:"user_filter"`
 	FilterTemplateMode string         `yaml:"filter_template_mode"`
 	Attributes         []string       `yaml:"attributes"`
+	Referrals          ReferralConfig `yaml:"referrals"`
+	Groups             GroupConfig    `yaml:"groups"`
+	Pool               PoolConfig     `yaml:"pool"`
 }
 
 type LDAPTLSConfig struct {
 	Verify     bool   `yaml:"verify"`
 	ServerName string `yaml:"server_name"`
 	CAFileRef  string `yaml:"ca_file_ref"`
+	StartTLS   bool   `yaml:"start_tls"`
+}
+
+type ReferralConfig struct {
+	Mode        string   `yaml:"mode"`
+	AllowedURLs []string `yaml:"allowed_urls"`
+}
+
+type GroupConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	MemberAttribute   string `yaml:"member_attribute"`
+	ResponseAttribute string `yaml:"response_attribute"`
+}
+
+type PoolConfig struct {
+	MaxIdle int `yaml:"max_idle"`
 }
 
 type UsernameConfig struct {
@@ -144,6 +165,15 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Tenants[i].LDAP.FilterTemplateMode == "" {
 			cfg.Tenants[i].LDAP.FilterTemplateMode = "builtin_or_template"
+		}
+		if cfg.Tenants[i].LDAP.Referrals.Mode == "" {
+			cfg.Tenants[i].LDAP.Referrals.Mode = "disabled"
+		}
+		if cfg.Tenants[i].LDAP.Groups.MemberAttribute == "" {
+			cfg.Tenants[i].LDAP.Groups.MemberAttribute = "memberOf"
+		}
+		if cfg.Tenants[i].LDAP.Groups.ResponseAttribute == "" {
+			cfg.Tenants[i].LDAP.Groups.ResponseAttribute = "groups"
 		}
 		if cfg.Tenants[i].Timeouts.LDAPConnectMS == 0 {
 			cfg.Tenants[i].Timeouts.LDAPConnectMS = 500
@@ -266,16 +296,14 @@ func validateProtection(problems *[]string, prefix string, protection Protection
 }
 
 func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
-	if ldap.URL == "" {
-		*problems = append(*problems, prefix+".url is required")
-	}
-	if strings.Contains(ldap.URL, "://") && !strings.HasPrefix(ldap.URL, "ldaps://") {
-		*problems = append(*problems, prefix+".url must use ldaps:// in Alpha")
-	}
+	validateLDAPURLs(problems, prefix, ldap)
 	if !ldap.TLS.Verify {
 		*problems = append(*problems, prefix+".tls.verify must be true")
 	}
 	validateFileRef(problems, prefix+".tls.ca_file_ref", ldap.TLS.CAFileRef, false)
+	validateReferrals(problems, prefix+".referrals", ldap.Referrals)
+	validateGroups(problems, prefix+".groups", ldap.Groups)
+	validatePool(problems, prefix+".pool", ldap.Pool)
 
 	switch ldap.LookupMode {
 	case "search_then_bind":
@@ -319,6 +347,109 @@ func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 		*problems = append(*problems, prefix+".attributes must contain at least one attribute")
 	}
 	validateUsername(problems, prefix+".username", ldap.Username)
+}
+
+func validatePool(problems *[]string, prefix string, pool PoolConfig) {
+	if pool.MaxIdle < 0 {
+		*problems = append(*problems, prefix+".max_idle must be zero or positive")
+	}
+}
+
+func validateLDAPURLs(problems *[]string, prefix string, ldap LDAPConfig) {
+	urls := ldapEndpointURLs(ldap)
+	if len(urls) == 0 {
+		*problems = append(*problems, prefix+".url or "+prefix+".urls is required")
+		return
+	}
+	seen := map[string]struct{}{}
+	for i, rawURL := range urls {
+		field := prefix + ".url"
+		if i > 0 || len(ldap.URLs) > 0 {
+			field = fmt.Sprintf("%s.urls[%d]", prefix, i)
+		}
+		if rawURL == "" {
+			*problems = append(*problems, field+" must not be empty")
+			continue
+		}
+		if _, ok := seen[rawURL]; ok {
+			*problems = append(*problems, field+" must be unique")
+			continue
+		}
+		seen[rawURL] = struct{}{}
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Scheme == "" {
+			*problems = append(*problems, field+" must include ldap:// or ldaps:// scheme")
+			continue
+		}
+		if parsed.Host == "" {
+			*problems = append(*problems, field+" must include host")
+			continue
+		}
+		if parsed.Scheme != "ldap" && parsed.Scheme != "ldaps" {
+			*problems = append(*problems, field+" must use ldap:// or ldaps:// scheme")
+			continue
+		}
+		if ldap.TLS.StartTLS {
+			if parsed.Scheme != "ldap" {
+				*problems = append(*problems, field+" must use ldap:// when tls.start_tls is true")
+			}
+			continue
+		}
+		if parsed.Scheme != "ldaps" {
+			*problems = append(*problems, field+" must use ldaps:// unless tls.start_tls is true")
+		}
+	}
+}
+
+func ldapEndpointURLs(ldap LDAPConfig) []string {
+	result := make([]string, 0, 1+len(ldap.URLs))
+	if ldap.URL != "" {
+		result = append(result, ldap.URL)
+	}
+	result = append(result, ldap.URLs...)
+	return result
+}
+
+func validateReferrals(problems *[]string, prefix string, referrals ReferralConfig) {
+	switch referrals.Mode {
+	case "disabled":
+		if len(referrals.AllowedURLs) > 0 {
+			*problems = append(*problems, prefix+".allowed_urls must be empty when mode is disabled")
+		}
+	case "allowlist":
+		if len(referrals.AllowedURLs) == 0 {
+			*problems = append(*problems, prefix+".allowed_urls is required when mode is allowlist")
+		}
+		for i, rawURL := range referrals.AllowedURLs {
+			field := fmt.Sprintf("%s.allowed_urls[%d]", prefix, i)
+			parsed, err := url.Parse(rawURL)
+			if err != nil || parsed.Scheme == "" {
+				*problems = append(*problems, field+" must include ldap:// or ldaps:// scheme")
+				continue
+			}
+			if parsed.Host == "" {
+				*problems = append(*problems, field+" must include host")
+				continue
+			}
+			if parsed.Scheme != "ldap" && parsed.Scheme != "ldaps" {
+				*problems = append(*problems, field+" must use ldap:// or ldaps://")
+			}
+		}
+	default:
+		*problems = append(*problems, prefix+".mode must be disabled or allowlist")
+	}
+}
+
+func validateGroups(problems *[]string, prefix string, groups GroupConfig) {
+	if !groups.Enabled {
+		return
+	}
+	if groups.MemberAttribute == "" {
+		*problems = append(*problems, prefix+".member_attribute is required when groups.enabled is true")
+	}
+	if groups.ResponseAttribute == "" {
+		*problems = append(*problems, prefix+".response_attribute is required when groups.enabled is true")
+	}
 }
 
 func validateUsername(problems *[]string, prefix string, username UsernameConfig) {

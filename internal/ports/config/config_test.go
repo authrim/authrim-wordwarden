@@ -55,6 +55,150 @@ func TestParseValidConfig(t *testing.T) {
 	}
 }
 
+func TestParseAllowsMultipleLDAPSURLs(t *testing.T) {
+	raw := strings.Replace(validConfig, `url: "ldaps://ldap.example.com:636"`, `urls:
+        - "ldaps://ldap-a.example.com:636"
+        - "ldaps://ldap-b.example.com:636"`, 1)
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(cfg.Tenants[0].LDAP.URLs) != 2 {
+		t.Fatalf("LDAP.URLs = %#v", cfg.Tenants[0].LDAP.URLs)
+	}
+}
+
+func TestParseAllowsStartTLSLDAPURL(t *testing.T) {
+	raw := strings.Replace(validConfig, `url: "ldaps://ldap.example.com:636"`, `url: "ldap://ldap.example.com:389"`, 1)
+	raw = strings.Replace(raw, `server_name: "ldap.example.com"`, `server_name: "ldap.example.com"
+        start_tls: true`, 1)
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !cfg.Tenants[0].LDAP.TLS.StartTLS {
+		t.Fatal("LDAP.TLS.StartTLS = false")
+	}
+}
+
+func TestParseRejectsLDAPURLWithoutStartTLS(t *testing.T) {
+	raw := strings.Replace(validConfig, `url: "ldaps://ldap.example.com:636"`, `url: "ldap://ldap.example.com:389"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want ldap:// rejection")
+	}
+	if !strings.Contains(err.Error(), "must use ldaps:// unless tls.start_tls is true") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsLDAPURLWithoutHost(t *testing.T) {
+	raw := strings.Replace(validConfig, `url: "ldaps://ldap.example.com:636"`, `url: "ldaps://"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want host validation error")
+	}
+	if !strings.Contains(err.Error(), "must include host") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsUnsupportedLDAPURLScheme(t *testing.T) {
+	raw := strings.Replace(validConfig, `url: "ldaps://ldap.example.com:636"`, `url: "https://ldap.example.com"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want scheme validation error")
+	}
+	if !strings.Contains(err.Error(), "must use ldap:// or ldaps:// scheme") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseAllowsReferralAllowlist(t *testing.T) {
+	raw := validConfig + `
+      referrals:
+        mode: "allowlist"
+        allowed_urls:
+          - "ldaps://ldap-referral.example.com:636"
+`
+
+	_, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsReferralAllowlistURLWithoutHost(t *testing.T) {
+	raw := validConfig + `
+      referrals:
+        mode: "allowlist"
+        allowed_urls:
+          - "ldaps://"
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want referral host validation error")
+	}
+	if !strings.Contains(err.Error(), "referrals.allowed_urls[0] must include host") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsReferralAllowlistUnsupportedScheme(t *testing.T) {
+	raw := validConfig + `
+      referrals:
+        mode: "allowlist"
+        allowed_urls:
+          - "https://ldap-referral.example.com"
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want referral scheme validation error")
+	}
+	if !strings.Contains(err.Error(), "referrals.allowed_urls[0] must use ldap:// or ldaps://") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseAllowsGroupPrimitive(t *testing.T) {
+	raw := validConfig + `
+      groups:
+        enabled: true
+        member_attribute: "memberOf"
+        response_attribute: "groups"
+`
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !cfg.Tenants[0].LDAP.Groups.Enabled {
+		t.Fatal("LDAP.Groups.Enabled = false")
+	}
+}
+
+func TestParseAllowsConnectionPool(t *testing.T) {
+	raw := validConfig + `
+      pool:
+        max_idle: 2
+`
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if cfg.Tenants[0].LDAP.Pool.MaxIdle != 2 {
+		t.Fatalf("LDAP.Pool.MaxIdle = %d", cfg.Tenants[0].LDAP.Pool.MaxIdle)
+	}
+}
+
 func TestParseRejectsUnknownField(t *testing.T) {
 	_, err := Parse([]byte(validConfig + "\nunknown_field: true\n"))
 	if err == nil {

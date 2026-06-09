@@ -1,2 +1,3 @@
 test/integration/openldap/certs/*
 !test/integration/openldap/certs/.gitkeep
+deploy/docker-compose/local-demo/.env

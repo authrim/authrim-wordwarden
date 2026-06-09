@@ -38,3 +38,8 @@ openssl x509 \
   -days 3650 \
   -sha256 \
   -extfile "$CERT_DIR/ldap.ext"
+
+# The osixia/openldap fixture copies the mounted key into a runtime directory
+# owned by the openldap user. Keep the generated test key host-readable so the
+# container can copy it during bootstrap. These keys are local fixture material.
+chmod 0644 "$CERT_DIR/ldap.key"

@@ -36,9 +36,13 @@ The guarded OpenLDAP integration test is available under
 
 ## Documentation
 
+- [Getting started](docs/getting-started.md)
 - [API contract](docs/api.md)
 - [Configuration](docs/configuration.md)
+- [Configuration examples](docs/config-examples.md)
 - [Operations](docs/operations.md)
+- [Cloudflare Tunnel deployment](docs/cloudflare-tunnel.md)
+- [Public HTTPS deployment](docs/public-https.md)
 - [Deployment samples](deploy/README.md)
 
 ## Local Development

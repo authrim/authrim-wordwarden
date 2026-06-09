@@ -5,6 +5,8 @@ rejected, except under the optional `experimental:` namespace.
 
 Configuration changes require a process restart in Alpha.
 
+For deployment-ready templates, see `docs/config-examples.md`.
+
 ## Top Level
 
 ```yaml
@@ -31,6 +33,36 @@ Secret references use one of:
 
 Secret values are resolved only for commands that need them. `config validate`
 validates reference syntax without reading secret values.
+
+## LDAP Lookup Modes
+
+## LDAP Transport and Endpoints
+
+Use `ldap.url` for one endpoint or `ldap.urls` for failover:
+
+```yaml
+ldap:
+  urls:
+    - "ldaps://ldap-a.example.com:636"
+    - "ldaps://ldap-b.example.com:636"
+```
+
+Wordwarden tries endpoints in order for each connection attempt. `ldaps://` is
+the default production transport.
+
+StartTLS is supported when the directory expects a clear LDAP connection first:
+
+```yaml
+ldap:
+  url: "ldap://ldap.example.com:389"
+  tls:
+    verify: true
+    start_tls: true
+    server_name: "ldap.example.com"
+```
+
+`ldap://` is accepted only when `tls.start_tls` is true. LDAP TLS verification
+remains required.
 
 ## LDAP Lookup Modes
 
@@ -89,6 +121,46 @@ protection:
 Storm protection temporarily blocks repeated HMAC failures, malformed requests,
 replays, or directory errors for the same connector.
 
+## Connection Pooling
+
+LDAP connection pooling is disabled by default. Enable it only when the
+directory and network path benefit from connection reuse:
+
+```yaml
+ldap:
+  pool:
+    max_idle: 2
+```
+
+Wordwarden only returns a connection to the idle pool after it can restore the
+service-bind state. Connections that were user-bound and cannot be safely
+restored are closed.
+
+## Referral Policy
+
+Referrals are disabled by default:
+
+```yaml
+ldap:
+  referrals:
+    mode: "disabled"
+```
+
+`allowlist` mode records the intended policy boundary for deployments that
+explicitly allow referral hosts:
+
+```yaml
+ldap:
+  referrals:
+    mode: "allowlist"
+    allowed_urls:
+      - "ldaps://ldap-referral.example.com:636"
+```
+
+Alpha does not chase referrals automatically. A directory referral is normalized
+as `directory_referral` so operators can fix base DN, filters, or referral
+policy without silent cross-directory traversal.
+
 ## Attribute Release
 
 Attributes returned to Authrim are the intersection of:
@@ -97,3 +169,39 @@ Attributes returned to Authrim are the intersection of:
 - the connector-local `ldap.attributes` allowlist
 
 Wordwarden does not perform role mapping in Alpha.
+
+## Group Lookup Primitive
+
+Wordwarden can expose a raw group membership attribute as a connector fact. This
+is not role mapping.
+
+```yaml
+ldap:
+  attributes:
+    - uid
+    - mail
+    - displayName
+  groups:
+    enabled: true
+    member_attribute: "memberOf"
+    response_attribute: "groups"
+```
+
+When Authrim requests `groups`, Wordwarden reads `memberOf` and returns those
+values as `groups`. Authrim remains responsible for role mapping and final
+attribute release.
+
+## AD Status Normalization
+
+Active Directory invalid-credentials bind diagnostics are normalized when AD
+provides standard `data` codes:
+
+| AD data code | Wordwarden result | Reason |
+| --- | --- | --- |
+| `532` | `policy_required` | `password_expired` |
+| `533` | `failure` | `account_disabled` |
+| `773` | `policy_required` | `must_change_password` |
+| `775` | `failure` | `account_locked` |
+
+`policy_required` is not a successful login and must not trigger Authrim session
+creation or future password-hash rehash side effects.

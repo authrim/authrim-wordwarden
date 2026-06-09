@@ -99,10 +99,40 @@ Invalid credentials response:
 }
 ```
 
+Account disabled and locked responses also use `result: "failure"` when the
+directory safely exposes that state:
+
+```json
+{
+  "request_id": "req_123",
+  "tenant_id": "tenant-a",
+  "connector_id": "ww_tenant_a",
+  "result": "failure",
+  "reason": "account_locked",
+  "directory_status": "ok"
+}
+```
+
+Policy-required response:
+
+```json
+{
+  "request_id": "req_123",
+  "tenant_id": "tenant-a",
+  "connector_id": "ww_tenant_a",
+  "result": "policy_required",
+  "reason": "must_change_password",
+  "directory_status": "ok"
+}
+```
+
 Credential verdicts use HTTP `200`. Transport, authentication, malformed
 request, replay, storm-limit, and directory availability failures use HTTP
 errors. HMAC failures are not allowed to block a connector-wide login path
 because they are unauthenticated.
+
+`policy_required` is not a successful login. Authrim must not create a session
+or trigger password-hash migration side effects for this result.
 
 ## Error Codes
 
@@ -125,6 +155,7 @@ because they are unauthenticated.
 | 429 | `replay_storm_limited` | true |
 | 503 | `directory_unavailable` | true |
 | 503 | `directory_tls_error` | true |
+| 503 | `directory_referral` | true |
 | 503 | `directory_error` | true |
 | 503 | `directory_error_storm_limited` | true |
 
@@ -132,3 +163,27 @@ because they are unauthenticated.
 
 `GET /healthz` is intentionally shallow in Alpha. It returns process status and
 version only; it does not test LDAP reachability.
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "connector": "authrim-wordwarden",
+  "version": "0.1.0"
+}
+```
+
+## Version
+
+`GET /version` returns connector identity and binary version only. It is safe for
+operational inventory checks and does not test LDAP reachability.
+
+Example response:
+
+```json
+{
+  "connector": "authrim-wordwarden",
+  "version": "0.1.0"
+}
+```
