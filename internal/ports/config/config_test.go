@@ -140,7 +140,7 @@ func TestParseRequiresDNTemplateForDNTemplateMode(t *testing.T) {
 	}
 }
 
-func TestParseAllowsDirectBindWithoutServiceBind(t *testing.T) {
+func TestParseRequiresServiceSearchForDirectBind(t *testing.T) {
 	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `lookup_mode: "direct_bind"`, 1)
 	raw = strings.Replace(raw, `      bind_dn: "uid=authrim,ou=system,dc=example,dc=com"
       bind_password_ref: "env:LDAP_BIND_PASSWORD"
@@ -149,7 +149,30 @@ func TestParseAllowsDirectBindWithoutServiceBind(t *testing.T) {
 `, "", 1)
 
 	_, err := Parse([]byte(raw))
-	if err != nil {
+	if err == nil {
+		t.Fatal("Parse() error = nil, want direct_bind service search error")
+	}
+	for _, want := range []string{
+		"bind_dn is required when lookup_mode is direct_bind",
+		"bind_password_ref: secret reference is empty",
+		"base_dn is required when lookup_mode is direct_bind",
+		"user_filter is required when lookup_mode is direct_bind",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Parse() error = %v, want %q", err, want)
+		}
+	}
+}
+
+func TestParseDirectBindRequiresUsernamePlaceholderInFilter(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `lookup_mode: "direct_bind"`, 1)
+	raw = strings.Replace(raw, `user_filter: "(uid={username})"`, `user_filter: "(objectClass=person)"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want direct_bind user_filter placeholder error")
+	}
+	if !strings.Contains(err.Error(), "user_filter must contain {username}") {
 		t.Fatalf("Parse() error = %v", err)
 	}
 }

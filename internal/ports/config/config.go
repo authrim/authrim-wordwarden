@@ -298,7 +298,19 @@ func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 		}
 		validateOptionalSecretRef(problems, prefix+".bind_password_ref", ldap.BindPasswordRef)
 	case "direct_bind":
-		validateOptionalSecretRef(problems, prefix+".bind_password_ref", ldap.BindPasswordRef)
+		validateSecretRef(problems, prefix+".bind_password_ref", ldap.BindPasswordRef)
+		if ldap.BindDN == "" {
+			*problems = append(*problems, prefix+".bind_dn is required when lookup_mode is direct_bind")
+		}
+		if ldap.BaseDN == "" {
+			*problems = append(*problems, prefix+".base_dn is required when lookup_mode is direct_bind")
+		}
+		if ldap.UserFilter == "" {
+			*problems = append(*problems, prefix+".user_filter is required when lookup_mode is direct_bind")
+		}
+		if ldap.UserFilter != "" && !strings.Contains(ldap.UserFilter, "{username}") {
+			*problems = append(*problems, prefix+".user_filter must contain {username}")
+		}
 	default:
 		*problems = append(*problems, prefix+".lookup_mode must be search_then_bind, dn_template, or direct_bind")
 	}

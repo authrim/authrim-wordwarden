@@ -47,6 +47,7 @@ tenants:
       base_dn: "dc=example,dc=com"
       # Required when lookup_mode is "dn_template".
       # dn_template: "uid={username},ou=People,dc=example,dc=com"
+      # Required for search_then_bind and direct_bind to scope users.
       user_filter: "(|(uid={username})(mail={username}))"
       filter_template_mode: "builtin_or_template"
       attributes:

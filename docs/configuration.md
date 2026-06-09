@@ -51,7 +51,10 @@ validates reference syntax without reading secret values.
 `direct_bind`:
 
 - bind directly using the processed username as the bind name
-- optionally use service-bind and search settings to resolve attributes
+- requires service-bind and search settings (`bind_dn`, `bind_password_ref`,
+  `base_dn`, and `user_filter`)
+- after a successful direct bind, service-bind and search must resolve exactly one
+  LDAP entry under `base_dn` through `user_filter` before authentication succeeds
 
 All modes apply username preprocessing before lookup or bind.
 
