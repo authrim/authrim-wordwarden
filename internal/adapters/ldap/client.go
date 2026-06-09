@@ -108,9 +108,21 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 			reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 		}
 	case "direct_bind":
+		if err := c.requireServiceSearch(); err != nil {
+			return result, err
+		}
+		if err := c.bindService(ctx, conn); err != nil {
+			return directory.TestConnectionResult{}, err
+		}
+		result.ServiceBound = true
+
+		user, err := c.resolveUserWithAttributes(ctx, conn, processed.Value, nil)
+		if err != nil {
+			return result, err
+		}
 		result.UserResolved = true
 		result.Subject = directory.Subject{
-			DirectoryID: processed.Value,
+			DirectoryID: user.dn,
 			Username:    processed.Value,
 		}
 
@@ -206,19 +218,22 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 			return directory.VerifyPasswordResult{}, err
 		}
 
-		attributes, directoryID, err := c.resolveDirectBindAttributes(ctx, conn, processed.Value, request.AttributeNames)
+		user, err := c.resolveDirectBindUser(ctx, conn, processed.Value, request.AttributeNames)
 		if err != nil {
+			if err == directory.ErrUserNotFound {
+				return directory.FailedVerification(directory.ReasonInvalidCredentials), nil
+			}
 			return directory.VerifyPasswordResult{}, err
 		}
 		reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 
-		return directory.SuccessfulVerification(
-			directory.Subject{
-				DirectoryID: directoryID,
-				Username:    processed.Value,
-			},
-			attributes,
-		), nil
+      return directory.SuccessfulVerification(
+      directory.Subject{
+          DirectoryID: user.dn,
+          Username:    processed.Value,
+      },
+      user.attributes,
+  ), nil
 	default:
 		return directory.VerifyPasswordResult{}, fmt.Errorf("unsupported ldap lookup_mode %q", c.config.LookupMode)
 	}
@@ -261,6 +276,13 @@ func (c Client) serviceSearchAvailable() bool {
 		c.config.UserFilter != ""
 }
 
+func (c Client) requireServiceSearch() error {
+	if c.serviceSearchAvailable() {
+		return nil
+	}
+	return fmt.Errorf("ldap direct_bind requires bind_dn, bind_password_ref, base_dn, and user_filter")
+}
+
 func (c Client) userDNFromTemplate(username string) string {
 	return strings.ReplaceAll(c.config.DNTemplate, "{username}", ldap.EscapeDN(username))
 }
@@ -293,24 +315,15 @@ func (c Client) resolveAttributesAfterSuccessfulBind(ctx context.Context, conn *
 	return user.attributes, nil
 }
 
-func (c Client) resolveDirectBindAttributes(ctx context.Context, conn *ldap.Conn, username string, requested []string) (map[string][]string, string, error) {
-	directoryID := username
-	if len(c.searchAttributes(requested)) == 0 || !c.serviceSearchAvailable() {
-		return nil, directoryID, nil
+func (c Client) resolveDirectBindUser(ctx context.Context, conn *ldap.Conn, username string, requested []string) (resolvedUser, error) {
+	if err := c.requireServiceSearch(); err != nil {
+		return resolvedUser{}, err
 	}
-
 	if err := c.bindService(ctx, conn); err != nil {
-		return nil, "", err
+		return resolvedUser{}, err
 	}
 
-	user, err := c.resolveUserWithAttributes(ctx, conn, username, requested)
-	if err == directory.ErrUserNotFound {
-		return nil, directoryID, nil
-	}
-	if err != nil {
-		return nil, "", err
-	}
-	return user.attributes, user.dn, nil
+	return c.resolveUserWithAttributes(ctx, conn, username, requested)
 }
 
 func (c Client) resolveAttributesByDN(ctx context.Context, conn *ldap.Conn, dn string, requested []string) (map[string][]string, error) {
