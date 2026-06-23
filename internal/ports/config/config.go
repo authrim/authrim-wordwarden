@@ -24,9 +24,10 @@ type DeploymentConfig struct {
 }
 
 type ServerConfig struct {
-	Listen        string          `yaml:"listen"`
-	PublicBaseURL string          `yaml:"public_base_url"`
-	TLS           ServerTLSConfig `yaml:"tls"`
+	Listen           string          `yaml:"listen"`
+	PublicBaseURL    string          `yaml:"public_base_url"`
+	ExposeOperations bool            `yaml:"expose_operations"`
+	TLS              ServerTLSConfig `yaml:"tls"`
 }
 
 type ServerTLSConfig struct {
@@ -277,7 +278,7 @@ func Validate(cfg *Config) error {
 			validateSecretRef(&problems, prefix+".authrim.hmac_keys.previous.secret_ref", tenant.Authrim.HMACKeys.Previous.SecretRef)
 		}
 		validateSecretRef(&problems, prefix+".authrim.audit_hash_secret_ref", tenant.Authrim.AuditHashSecretRef)
-		validateRelay(&problems, prefix+".authrim.relay", tenant.Authrim.Relay)
+		validateRelay(&problems, prefix+".authrim.relay", tenant.Authrim.Relay, tenant.TenantID, tenant.ConnectorID)
 		validateLDAP(&problems, prefix+".ldap", tenant.LDAP)
 		validateTimeouts(&problems, prefix+".timeouts", tenant.Timeouts)
 		if tenant.Protection.MaxConcurrentRequests <= 0 {
@@ -310,7 +311,7 @@ func validateProtection(problems *[]string, prefix string, protection Protection
 	}
 }
 
-func validateRelay(problems *[]string, prefix string, relay RelayConfig) {
+func validateRelay(problems *[]string, prefix string, relay RelayConfig, tenantID string, connectorID string) {
 	if !relay.Enabled {
 		return
 	}
@@ -331,6 +332,23 @@ func validateRelay(problems *[]string, prefix string, relay RelayConfig) {
 		}
 	default:
 		*problems = append(*problems, prefix+".url must use wss:// except ws://localhost for local development")
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(parts) < 6 || strings.Join(parts[len(parts)-6:len(parts)-2], "/") != "api/auth/directory-relay/connect" {
+		*problems = append(*problems, prefix+".url must include /api/auth/directory-relay/connect/{tenant_id}/{connector_id}")
+	} else {
+		rawTenantID, tenantErr := url.PathUnescape(parts[len(parts)-2])
+		rawConnectorID, connectorErr := url.PathUnescape(parts[len(parts)-1])
+		if tenantErr != nil {
+			*problems = append(*problems, prefix+".url tenant_id path segment is invalid")
+		} else if rawTenantID != tenantID {
+			*problems = append(*problems, prefix+".url tenant_id must match tenant_id")
+		}
+		if connectorErr != nil {
+			*problems = append(*problems, prefix+".url connector_id path segment is invalid")
+		} else if rawConnectorID != connectorID {
+			*problems = append(*problems, prefix+".url connector_id must match connector_id")
+		}
 	}
 	if relay.ReconnectMinMS <= 0 {
 		*problems = append(*problems, prefix+".reconnect_min_ms must be positive")

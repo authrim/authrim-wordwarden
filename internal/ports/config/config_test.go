@@ -232,6 +232,41 @@ func TestParseRejectsRelayHTTPURL(t *testing.T) {
 	}
 }
 
+func TestParseRejectsRelayURLTenantOrConnectorMismatch(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "tenant",
+			url:  "wss://login.example.com/api/auth/directory-relay/connect/tenant-b/ww_tenant_a",
+			want: "url tenant_id must match tenant_id",
+		},
+		{
+			name: "connector",
+			url:  "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_b",
+			want: "url connector_id must match connector_id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := strings.Replace(validConfig, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"`, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+      relay:
+        enabled: true
+        url: "`+tc.url+`"`, 1)
+
+			_, err := Parse([]byte(raw))
+			if err == nil {
+				t.Fatal("Parse() error = nil, want relay URL binding validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Parse() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestParseRejectsUnknownField(t *testing.T) {
 	_, err := Parse([]byte(validConfig + "\nunknown_field: true\n"))
 	if err == nil {

@@ -8,8 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,8 +34,9 @@ type TenantRuntime struct {
 }
 
 type HandlerOptions struct {
-	Tenants map[string]TenantRuntime
-	Audit   audit.Sink
+	Tenants          map[string]TenantRuntime
+	Audit            audit.Sink
+	ExposeOperations bool
 }
 
 type healthResponse struct {
@@ -46,13 +50,29 @@ type versionResponse struct {
 	Version   string `json:"version"`
 }
 
+type healthDetailResponse struct {
+	OK        bool                 `json:"ok"`
+	Connector string               `json:"connector"`
+	Version   string               `json:"version"`
+	Tenants   []healthDetailTenant `json:"tenants"`
+}
+
+type healthDetailTenant struct {
+	TenantID         string `json:"tenant_id"`
+	ConnectorID      string `json:"connector_id"`
+	ConcurrencyLimit int    `json:"concurrency_limit"`
+	RequestTimeoutMS int    `json:"request_timeout_ms"`
+}
+
 type handler struct {
-	version string
-	tenants map[string]TenantRuntime
-	replay  *replayCache
-	audit   audit.Sink
-	limits  map[string]chan struct{}
-	storms  map[string]*connectorStorms
+	version          string
+	tenants          map[string]TenantRuntime
+	replay           *replayCache
+	audit            audit.Sink
+	limits           map[string]chan struct{}
+	storms           map[string]*connectorStorms
+	metrics          *metricsStore
+	exposeOperations bool
 }
 
 func NewHandler(version string, options ...HandlerOptions) http.Handler {
@@ -63,12 +83,16 @@ func NewHandler(version string, options ...HandlerOptions) http.Handler {
 		audit:   audit.DiscardSink{},
 		limits:  map[string]chan struct{}{},
 		storms:  map[string]*connectorStorms{},
+		metrics: newMetricsStore(),
 	}
 	if len(options) > 0 && options[0].Tenants != nil {
 		h.tenants = options[0].Tenants
 	}
 	if len(options) > 0 && options[0].Audit != nil {
 		h.audit = options[0].Audit
+	}
+	if len(options) > 0 {
+		h.exposeOperations = options[0].ExposeOperations
 	}
 	for connectorID, runtime := range h.tenants {
 		limit := runtime.ConcurrencyLimit
@@ -93,8 +117,70 @@ func NewHandler(version string, options ...HandlerOptions) http.Handler {
 			Version:   version,
 		})
 	})
+	mux.HandleFunc("GET /healthz/details", h.healthDetails)
+	mux.HandleFunc("GET /metrics", h.metricsEndpoint)
 	mux.HandleFunc("POST /v1/auth/verify-password", h.verifyPassword)
 	return mux
+}
+
+func (h *handler) healthDetails(w http.ResponseWriter, req *http.Request) {
+	if !h.operationsAllowed(req) {
+		http.NotFound(w, req)
+		return
+	}
+	connectors := make([]string, 0, len(h.tenants))
+	for connectorID := range h.tenants {
+		connectors = append(connectors, connectorID)
+	}
+	sort.Strings(connectors)
+
+	tenants := make([]healthDetailTenant, 0, len(connectors))
+	for _, connectorID := range connectors {
+		runtime := h.tenants[connectorID]
+		concurrencyLimit := runtime.ConcurrencyLimit
+		if concurrencyLimit <= 0 {
+			concurrencyLimit = 8
+		}
+		requestTimeoutMS := runtime.RequestTimeoutMS
+		if requestTimeoutMS <= 0 {
+			requestTimeoutMS = 2500
+		}
+		tenants = append(tenants, healthDetailTenant{
+			TenantID:         runtime.TenantID,
+			ConnectorID:      runtime.ConnectorID,
+			ConcurrencyLimit: concurrencyLimit,
+			RequestTimeoutMS: requestTimeoutMS,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, healthDetailResponse{
+		OK:        true,
+		Connector: "authrim-wordwarden",
+		Version:   h.version,
+		Tenants:   tenants,
+	})
+}
+
+func (h *handler) metricsEndpoint(w http.ResponseWriter, req *http.Request) {
+	if !h.operationsAllowed(req) {
+		http.NotFound(w, req)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(h.metrics.prometheus()))
+}
+
+func (h *handler) operationsAllowed(req *http.Request) bool {
+	if h.exposeOperations {
+		return true
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		host = req.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 type verifyPasswordRequest struct {
@@ -472,6 +558,7 @@ func validVerifyPasswordRequest(request verifyPasswordRequest) bool {
 func (h *handler) emit(req *http.Request, event audit.Event) {
 	event.EventID = uuid.NewString()
 	event.Timestamp = time.Now().UTC()
+	h.metrics.record(event)
 	_ = h.audit.WriteEvent(req.Context(), event)
 }
 
@@ -556,6 +643,66 @@ func usernameHash(secret []byte, username string) string {
 
 func replayKey(connectorID string, keyID string, requestID string, nonce string) string {
 	return connectorID + ":" + keyID + ":" + requestID + ":" + nonce
+}
+
+type metricsStore struct {
+	mu       sync.Mutex
+	counters map[metricKey]uint64
+}
+
+type metricKey struct {
+	EventType   string
+	TenantID    string
+	ConnectorID string
+	Result      string
+	ErrorCode   string
+}
+
+func newMetricsStore() *metricsStore {
+	return &metricsStore{counters: map[metricKey]uint64{}}
+}
+
+func (m *metricsStore) record(event audit.Event) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.counters[metricKey{
+		EventType:   event.EventType,
+		TenantID:    event.TenantID,
+		ConnectorID: event.ConnectorID,
+		Result:      event.Result,
+		ErrorCode:   event.ErrorCode,
+	}]++
+}
+
+func (m *metricsStore) prometheus() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]metricKey, 0, len(m.counters))
+	for key := range m.counters {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return metricSortKey(keys[i]) < metricSortKey(keys[j])
+	})
+
+	out := "# HELP wordwarden_events_total Wordwarden audit-classified events.\n" +
+		"# TYPE wordwarden_events_total counter\n"
+	for _, key := range keys {
+		out += fmt.Sprintf(
+			"wordwarden_events_total{event_type=%q,tenant_id=%q,connector_id=%q,result=%q,error_code=%q} %d\n",
+			key.EventType,
+			key.TenantID,
+			key.ConnectorID,
+			key.Result,
+			key.ErrorCode,
+			m.counters[key],
+		)
+	}
+	return out
+}
+
+func metricSortKey(key metricKey) string {
+	return key.EventType + "\x00" + key.TenantID + "\x00" + key.ConnectorID + "\x00" + key.Result + "\x00" + key.ErrorCode
 }
 
 func (h *handler) acquire(connectorID string) (func(), bool) {

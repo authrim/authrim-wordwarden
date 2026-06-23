@@ -3,11 +3,13 @@ package app
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -46,6 +48,7 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newServeCommand(&configPath))
 	root.AddCommand(newConfigCommand(&configPath))
 	root.AddCommand(newLDAPCommand(&configPath))
+	root.AddCommand(newDiagnosticsCommand(&configPath))
 	root.AddCommand(newVersionCommand())
 
 	return root
@@ -72,7 +75,7 @@ func newServeCommand(configPath *string) *cobra.Command {
 
 			server := &http.Server{
 				Addr:              cfg.Server.Listen,
-				Handler:           httpapi.NewHandler(version, httpapi.HandlerOptions{Tenants: runtimes, Audit: auditlog.NewJSONSink(os.Stdout)}),
+				Handler:           httpapi.NewHandler(version, httpapi.HandlerOptions{Tenants: runtimes, Audit: auditlog.NewJSONSink(os.Stdout), ExposeOperations: cfg.Server.ExposeOperations}),
 				ReadHeaderTimeout: 5 * time.Second,
 			}
 
@@ -212,6 +215,30 @@ func newLDAPCommand(configPath *string) *cobra.Command {
 	return ldapCmd
 }
 
+func newDiagnosticsCommand(configPath *string) *cobra.Command {
+	diagnosticsCmd := &cobra.Command{
+		Use:   "diagnostics",
+		Short: "Create redacted diagnostic output",
+	}
+
+	bundleCmd := &cobra.Command{
+		Use:   "bundle",
+		Short: "Print a redacted diagnostic bundle",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.LoadFile(*configPath)
+			if err != nil {
+				return err
+			}
+			encoder := json.NewEncoder(cmd.OutOrStdout())
+			encoder.SetIndent("", "  ")
+			return encoder.Encode(buildDiagnosticBundle(cfg))
+		},
+	}
+
+	diagnosticsCmd.AddCommand(bundleCmd)
+	return diagnosticsCmd
+}
+
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -221,6 +248,133 @@ func newVersionCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+type diagnosticBundle struct {
+	Connector string                    `json:"connector"`
+	Version   string                    `json:"version"`
+	Server    diagnosticServerSummary   `json:"server"`
+	Tenants   []diagnosticTenantSummary `json:"tenants"`
+}
+
+type diagnosticServerSummary struct {
+	Listen        string `json:"listen"`
+	PublicBaseURL string `json:"public_base_url,omitempty"`
+	TLSEnabled    bool   `json:"tls_enabled"`
+}
+
+type diagnosticTenantSummary struct {
+	TenantID           string                 `json:"tenant_id"`
+	ConnectorID        string                 `json:"connector_id"`
+	HMACActiveKID      string                 `json:"hmac_active_kid"`
+	HasPreviousHMACKey bool                   `json:"has_previous_hmac_key"`
+	Relay              diagnosticRelaySummary `json:"relay"`
+	LDAP               diagnosticLDAPSummary  `json:"ldap"`
+	Timeouts           diagnosticTimeouts     `json:"timeouts"`
+	Protection         diagnosticProtection   `json:"protection"`
+}
+
+type diagnosticRelaySummary struct {
+	Enabled        bool   `json:"enabled"`
+	URLHost        string `json:"url_host,omitempty"`
+	URLPath        string `json:"url_path,omitempty"`
+	ReconnectMinMS int    `json:"reconnect_min_ms"`
+	ReconnectMaxMS int    `json:"reconnect_max_ms"`
+}
+
+type diagnosticLDAPSummary struct {
+	URLCount      int      `json:"url_count"`
+	LookupMode    string   `json:"lookup_mode"`
+	StartTLS      bool     `json:"start_tls"`
+	TLSVerify     bool     `json:"tls_verify"`
+	Attributes    []string `json:"attributes"`
+	GroupsEnabled bool     `json:"groups_enabled"`
+	ReferralsMode string   `json:"referrals_mode"`
+}
+
+type diagnosticTimeouts struct {
+	LDAPConnectMS int `json:"ldap_connect_ms"`
+	LDAPBindMS    int `json:"ldap_bind_ms"`
+	LDAPSearchMS  int `json:"ldap_search_ms"`
+	RequestMS     int `json:"request_ms"`
+}
+
+type diagnosticProtection struct {
+	MaxConcurrentRequests int `json:"max_concurrent_requests"`
+	StormWindowMS         int `json:"storm_window_ms"`
+	StormBlockMS          int `json:"storm_block_ms"`
+	MalformedRequestLimit int `json:"malformed_request_limit"`
+	ReplayLimit           int `json:"replay_limit"`
+	DirectoryErrorLimit   int `json:"directory_error_limit"`
+}
+
+func buildDiagnosticBundle(cfg *config.Config) diagnosticBundle {
+	bundle := diagnosticBundle{
+		Connector: "authrim-wordwarden",
+		Version:   version,
+		Server: diagnosticServerSummary{
+			Listen:        cfg.Server.Listen,
+			PublicBaseURL: cfg.Server.PublicBaseURL,
+			TLSEnabled:    cfg.Server.TLS.Enabled,
+		},
+		Tenants: make([]diagnosticTenantSummary, 0, len(cfg.Tenants)),
+	}
+
+	for _, tenant := range cfg.Tenants {
+		urlHost, urlPath := relayURLSummary(tenant.Authrim.Relay.URL)
+		urlCount := len(tenant.LDAP.URLs)
+		if tenant.LDAP.URL != "" {
+			urlCount++
+		}
+		bundle.Tenants = append(bundle.Tenants, diagnosticTenantSummary{
+			TenantID:           tenant.TenantID,
+			ConnectorID:        tenant.ConnectorID,
+			HMACActiveKID:      tenant.Authrim.HMACKeys.Active.KID,
+			HasPreviousHMACKey: tenant.Authrim.HMACKeys.Previous != nil,
+			Relay: diagnosticRelaySummary{
+				Enabled:        tenant.Authrim.Relay.Enabled,
+				URLHost:        urlHost,
+				URLPath:        urlPath,
+				ReconnectMinMS: tenant.Authrim.Relay.ReconnectMinMS,
+				ReconnectMaxMS: tenant.Authrim.Relay.ReconnectMaxMS,
+			},
+			LDAP: diagnosticLDAPSummary{
+				URLCount:      urlCount,
+				LookupMode:    tenant.LDAP.LookupMode,
+				StartTLS:      tenant.LDAP.TLS.StartTLS,
+				TLSVerify:     tenant.LDAP.TLS.Verify,
+				Attributes:    append([]string(nil), tenant.LDAP.Attributes...),
+				GroupsEnabled: tenant.LDAP.Groups.Enabled,
+				ReferralsMode: tenant.LDAP.Referrals.Mode,
+			},
+			Timeouts: diagnosticTimeouts{
+				LDAPConnectMS: tenant.Timeouts.LDAPConnectMS,
+				LDAPBindMS:    tenant.Timeouts.LDAPBindMS,
+				LDAPSearchMS:  tenant.Timeouts.LDAPSearchMS,
+				RequestMS:     tenant.Timeouts.RequestMS,
+			},
+			Protection: diagnosticProtection{
+				MaxConcurrentRequests: tenant.Protection.MaxConcurrentRequests,
+				StormWindowMS:         tenant.Protection.StormWindowMS,
+				StormBlockMS:          tenant.Protection.StormBlockMS,
+				MalformedRequestLimit: tenant.Protection.MalformedRequestLimit,
+				ReplayLimit:           tenant.Protection.ReplayLimit,
+				DirectoryErrorLimit:   tenant.Protection.DirectoryErrorLimit,
+			},
+		})
+	}
+	return bundle
+}
+
+func relayURLSummary(raw string) (string, string) {
+	if raw == "" {
+		return "", ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", ""
+	}
+	return parsed.Host, parsed.EscapedPath()
 }
 
 func buildTenantRuntimes(ctx context.Context, cfg *config.Config) (map[string]httpapi.TenantRuntime, error) {

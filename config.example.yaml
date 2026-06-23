@@ -4,6 +4,8 @@ deployment:
 server:
   listen: "127.0.0.1:8080"
   public_base_url: "https://wordwarden.example.com"
+  # Exposes /healthz/details and /metrics to non-loopback clients.
+  expose_operations: false
   tls:
     enabled: false
     cert_file_ref: null

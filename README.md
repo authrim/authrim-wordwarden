@@ -35,6 +35,8 @@ Current implementation slice:
 - username preprocessing
 - connector concurrency protection hook
 - connector storm protection for HMAC failures, malformed/replayed requests, and directory errors
+- outbound relay protocol version negotiation and tenant/connector URL binding
+- redacted diagnostics bundle, detailed health, and Prometheus-compatible counters
 - OpenLDAP integration fixture
 - CI for tests, example config validation, and Docker image build
 
@@ -92,6 +94,7 @@ integration.
 - [Passwordless migration](docs/passwordless-migration.md)
 - [Production hardening](docs/production-hardening.md)
 - [Operations](docs/operations.md)
+- [Outbound relay operations](docs/relay-operations.md)
 - [Release process](docs/release.md)
 - [Cloudflare Tunnel deployment](docs/cloudflare-tunnel.md)
 - [Public HTTPS deployment](docs/public-https.md)
@@ -121,12 +124,18 @@ Health check:
 
 ```bash
 curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/healthz/details
+curl http://127.0.0.1:8080/metrics
 ```
+
+`/healthz/details` and `/metrics` are loopback-only by default. Expose them to
+non-loopback clients only behind a private network or an allowlisted proxy.
 
 LDAP diagnostics:
 
 ```bash
 go run ./cmd/wordwarden --config config.example.yaml ldap test --tenant tenant-a
+go run ./cmd/wordwarden --config config.example.yaml diagnostics bundle
 ```
 
 OpenLDAP integration fixture:

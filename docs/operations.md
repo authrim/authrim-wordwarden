@@ -31,6 +31,13 @@ Validate configuration without reading secret values:
 wordwarden --config /etc/authrim-wordwarden/config.yaml config validate
 ```
 
+Create a redacted diagnostic bundle without reading HMAC, LDAP bind, or audit
+hash secret values:
+
+```bash
+wordwarden --config /etc/authrim-wordwarden/config.yaml diagnostics bundle
+```
+
 Test LDAP reachability and service bind:
 
 ```bash
@@ -58,9 +65,11 @@ Use this order when debugging a failed login:
 2. `ldap test --tenant <tenant_id>`
 3. `ldap test --tenant <tenant_id> --username <user> --password-stdin`
 4. local `GET /healthz`
-5. public or tunnel `GET /healthz`
-6. Authrim directory password login
-7. Wordwarden audit event correlation by `request_id`
+5. local `GET /healthz/details`
+6. local `GET /metrics`
+7. public/tunnel `GET /healthz`, or Authrim relay health check
+8. Authrim directory password login
+9. Wordwarden audit event correlation by `request_id`
 
 Interpretation:
 
@@ -70,9 +79,13 @@ Interpretation:
 - Step 3 failure means user lookup, DN construction, password bind, or directory
   account state is the likely issue.
 - Step 4 failure means the Wordwarden process or listener is down.
-- Step 5 failure means ingress, tunnel, reverse proxy, DNS, or certificate setup
-  is broken.
-- Step 6 failure with successful earlier steps usually means HMAC, connector id,
+- Step 5 failure means the local management surface is not healthy.
+- Step 6 failure means the process-local metrics surface is not available.
+  These operational endpoints are loopback-only unless
+  `server.expose_operations: true` is set.
+- Step 7 failure means ingress, tunnel, reverse proxy, DNS, certificate setup, or
+  relay WebSocket registration is broken.
+- Step 8 failure with successful earlier steps usually means HMAC, connector id,
   tenant id, timeout, or Authrim identity mapping needs inspection.
 
 ## Health Check Runbook
@@ -194,3 +207,7 @@ monitoring, log collection, secret management, and certificate rotation.
 For the production hardening checklist, threat model summary, load testing,
 secret rotation, high availability, compatibility matrix, and incident response
 runbook, see `docs/production-hardening.md`.
+
+For outbound relay-specific operations, including Authrim one-time secrets,
+WebSocket status, overload handling, and direct/tunnel/relay troubleshooting
+differences, see `docs/relay-operations.md`.

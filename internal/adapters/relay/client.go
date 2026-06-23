@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 
 const (
 	Protocol             = "authrim.wordwarden.relay.v1"
+	ProtocolVersion      = 1
+	MinSupportedVersion  = 1
 	Algorithm            = "AUTHRIM-WORDWARDEN-RELAY-HMAC-SHA256"
 	maxRelayMessageBytes = 64 * 1024
 )
@@ -46,65 +49,77 @@ type Client struct {
 }
 
 type challengeMessage struct {
-	Type        string `json:"type"`
-	Protocol    string `json:"protocol"`
-	ChallengeID string `json:"challenge_id"`
-	Nonce       string `json:"nonce"`
-	IssuedAt    string `json:"issued_at"`
-	ExpiresAt   string `json:"expires_at"`
+	Type                string `json:"type"`
+	Protocol            string `json:"protocol"`
+	ProtocolVersion     int    `json:"protocol_version"`
+	MinSupportedVersion int    `json:"min_supported_version"`
+	ChallengeID         string `json:"challenge_id"`
+	Nonce               string `json:"nonce"`
+	IssuedAt            string `json:"issued_at"`
+	ExpiresAt           string `json:"expires_at"`
 }
 
 type authResponseMessage struct {
-	Type        string `json:"type"`
-	Protocol    string `json:"protocol"`
-	TenantID    string `json:"tenant_id"`
-	ConnectorID string `json:"connector_id"`
-	KeyID       string `json:"key_id"`
-	ChallengeID string `json:"challenge_id"`
-	Nonce       string `json:"nonce"`
-	Timestamp   string `json:"timestamp"`
-	Signature   string `json:"signature"`
+	Type                string `json:"type"`
+	Protocol            string `json:"protocol"`
+	ProtocolVersion     int    `json:"protocol_version"`
+	MinSupportedVersion int    `json:"min_supported_version"`
+	TenantID            string `json:"tenant_id"`
+	ConnectorID         string `json:"connector_id"`
+	KeyID               string `json:"key_id"`
+	ChallengeID         string `json:"challenge_id"`
+	Nonce               string `json:"nonce"`
+	Timestamp           string `json:"timestamp"`
+	Signature           string `json:"signature"`
 }
 
 type envelope struct {
-	Type     string `json:"type"`
-	Protocol string `json:"protocol"`
+	Type                string `json:"type"`
+	Protocol            string `json:"protocol"`
+	ProtocolVersion     int    `json:"protocol_version"`
+	MinSupportedVersion int    `json:"min_supported_version"`
 }
 
 type verifyRequestMessage struct {
-	Type           string   `json:"type"`
-	Protocol       string   `json:"protocol"`
-	ID             string   `json:"id"`
-	RequestID      string   `json:"request_id"`
-	TenantID       string   `json:"tenant_id"`
-	ConnectorID    string   `json:"connector_id"`
-	Username       string   `json:"username"`
-	Password       string   `json:"password"`
-	AttributeNames []string `json:"attribute_names"`
+	Type                string   `json:"type"`
+	Protocol            string   `json:"protocol"`
+	ProtocolVersion     int      `json:"protocol_version"`
+	MinSupportedVersion int      `json:"min_supported_version"`
+	ID                  string   `json:"id"`
+	RequestID           string   `json:"request_id"`
+	TenantID            string   `json:"tenant_id"`
+	ConnectorID         string   `json:"connector_id"`
+	Username            string   `json:"username"`
+	Password            string   `json:"password"`
+	AttributeNames      []string `json:"attribute_names"`
 }
 
 type verifyResponseMessage struct {
-	Type            string              `json:"type"`
-	Protocol        string              `json:"protocol"`
-	ID              string              `json:"id"`
-	RequestID       string              `json:"request_id"`
-	TenantID        string              `json:"tenant_id"`
-	ConnectorID     string              `json:"connector_id"`
-	Result          string              `json:"result"`
-	Reason          string              `json:"reason,omitempty"`
-	Subject         *subjectMessage     `json:"subject,omitempty"`
-	Attributes      map[string][]string `json:"attributes,omitempty"`
-	DirectoryStatus string              `json:"directory_status"`
+	Type                string              `json:"type"`
+	Protocol            string              `json:"protocol"`
+	ProtocolVersion     int                 `json:"protocol_version"`
+	MinSupportedVersion int                 `json:"min_supported_version"`
+	ID                  string              `json:"id"`
+	RequestID           string              `json:"request_id"`
+	TenantID            string              `json:"tenant_id"`
+	ConnectorID         string              `json:"connector_id"`
+	Result              string              `json:"result"`
+	Reason              string              `json:"reason,omitempty"`
+	Subject             *subjectMessage     `json:"subject,omitempty"`
+	Attributes          map[string][]string `json:"attributes,omitempty"`
+	DirectoryStatus     string              `json:"directory_status"`
 }
 
 type verifyErrorMessage struct {
-	Type        string       `json:"type"`
-	Protocol    string       `json:"protocol"`
-	ID          string       `json:"id"`
-	RequestID   string       `json:"request_id,omitempty"`
-	TenantID    string       `json:"tenant_id,omitempty"`
-	ConnectorID string       `json:"connector_id,omitempty"`
-	Error       errorPayload `json:"error"`
+	Type                string       `json:"type"`
+	Protocol            string       `json:"protocol"`
+	ProtocolVersion     int          `json:"protocol_version"`
+	MinSupportedVersion int          `json:"min_supported_version"`
+	ID                  string       `json:"id"`
+	RequestID           string       `json:"request_id,omitempty"`
+	TenantID            string       `json:"tenant_id,omitempty"`
+	ConnectorID         string       `json:"connector_id,omitempty"`
+	Error               errorPayload `json:"error"`
 }
 
 type subjectMessage struct {
@@ -129,6 +144,9 @@ func NewClient(config Config) (*Client, error) {
 	}
 	if config.ConnectorID == "" {
 		return nil, errors.New("relay connector id is required")
+	}
+	if err := validateRelayURLBinding(config.URL, config.TenantID, config.ConnectorID); err != nil {
+		return nil, err
 	}
 	if config.KeyID == "" {
 		return nil, errors.New("relay key id is required")
@@ -208,7 +226,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 		if err := json.Unmarshal(raw, &env); err != nil {
 			continue
 		}
-		if env.Protocol != Protocol || env.Type != "verify.request" {
+		if env.Protocol != Protocol || env.Type != "verify.request" || !relayProtocolCompatible(env) {
 			continue
 		}
 		var request verifyRequestMessage
@@ -224,7 +242,10 @@ func (c *Client) authenticate(ctx context.Context, conn *websocket.Conn) error {
 	if err := wsjson.Read(ctx, conn, &challenge); err != nil {
 		return err
 	}
-	if challenge.Type != "auth.challenge" || challenge.Protocol != Protocol {
+	if challenge.Type != "auth.challenge" || challenge.Protocol != Protocol || !relayProtocolCompatible(envelope{
+		ProtocolVersion:     challenge.ProtocolVersion,
+		MinSupportedVersion: challenge.MinSupportedVersion,
+	}) {
 		return errors.New("invalid relay challenge")
 	}
 	expiresAt, err := time.Parse(time.RFC3339, challenge.ExpiresAt)
@@ -237,23 +258,27 @@ func (c *Client) authenticate(ctx context.Context, conn *websocket.Conn) error {
 
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	canonical := AuthCanonical(AuthCanonicalInput{
-		TenantID:    c.config.TenantID,
-		ConnectorID: c.config.ConnectorID,
-		KeyID:       c.config.KeyID,
-		ChallengeID: challenge.ChallengeID,
-		Nonce:       challenge.Nonce,
-		Timestamp:   timestamp,
+		TenantID:            c.config.TenantID,
+		ConnectorID:         c.config.ConnectorID,
+		KeyID:               c.config.KeyID,
+		ProtocolVersion:     ProtocolVersion,
+		MinSupportedVersion: MinSupportedVersion,
+		ChallengeID:         challenge.ChallengeID,
+		Nonce:               challenge.Nonce,
+		Timestamp:           timestamp,
 	})
 	response := authResponseMessage{
-		Type:        "auth.response",
-		Protocol:    Protocol,
-		TenantID:    c.config.TenantID,
-		ConnectorID: c.config.ConnectorID,
-		KeyID:       c.config.KeyID,
-		ChallengeID: challenge.ChallengeID,
-		Nonce:       challenge.Nonce,
-		Timestamp:   timestamp,
-		Signature:   SignCanonical(canonical, c.config.Secret),
+		Type:                "auth.response",
+		Protocol:            Protocol,
+		ProtocolVersion:     ProtocolVersion,
+		MinSupportedVersion: MinSupportedVersion,
+		TenantID:            c.config.TenantID,
+		ConnectorID:         c.config.ConnectorID,
+		KeyID:               c.config.KeyID,
+		ChallengeID:         challenge.ChallengeID,
+		Nonce:               challenge.Nonce,
+		Timestamp:           timestamp,
+		Signature:           SignCanonical(canonical, c.config.Secret),
 	}
 	if err := wsjson.Write(ctx, conn, response); err != nil {
 		return err
@@ -262,7 +287,7 @@ func (c *Client) authenticate(ctx context.Context, conn *websocket.Conn) error {
 	if err := wsjson.Read(ctx, conn, &ack); err != nil {
 		return err
 	}
-	if ack.Protocol != Protocol || ack.Type != "auth.ok" {
+	if ack.Protocol != Protocol || ack.Type != "auth.ok" || !relayProtocolCompatible(ack) {
 		return errors.New("relay authentication rejected")
 	}
 	return nil
@@ -271,13 +296,15 @@ func (c *Client) authenticate(ctx context.Context, conn *websocket.Conn) error {
 func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, request verifyRequestMessage) {
 	if !c.validVerifyRequest(request) {
 		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:        "verify.error",
-			Protocol:    Protocol,
-			ID:          request.ID,
-			RequestID:   request.RequestID,
-			TenantID:    request.TenantID,
-			ConnectorID: request.ConnectorID,
-			Error:       errorPayload{Code: "invalid_relay_request", Retryable: false},
+			Type:                "verify.error",
+			Protocol:            Protocol,
+			ProtocolVersion:     ProtocolVersion,
+			MinSupportedVersion: MinSupportedVersion,
+			ID:                  request.ID,
+			RequestID:           request.RequestID,
+			TenantID:            request.TenantID,
+			ConnectorID:         request.ConnectorID,
+			Error:               errorPayload{Code: "invalid_relay_request", Retryable: false},
 		})
 		return
 	}
@@ -287,13 +314,15 @@ func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, 
 		defer func() { <-c.limit }()
 	default:
 		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:        "verify.error",
-			Protocol:    Protocol,
-			ID:          request.ID,
-			RequestID:   request.RequestID,
-			TenantID:    request.TenantID,
-			ConnectorID: request.ConnectorID,
-			Error:       errorPayload{Code: "connector_rate_limited", Retryable: true},
+			Type:                "verify.error",
+			Protocol:            Protocol,
+			ProtocolVersion:     ProtocolVersion,
+			MinSupportedVersion: MinSupportedVersion,
+			ID:                  request.ID,
+			RequestID:           request.RequestID,
+			TenantID:            request.TenantID,
+			ConnectorID:         request.ConnectorID,
+			Error:               errorPayload{Code: "connector_rate_limited", Retryable: true},
 		})
 		return
 	}
@@ -307,13 +336,15 @@ func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, 
 	})
 	if err != nil {
 		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:        "verify.error",
-			Protocol:    Protocol,
-			ID:          request.ID,
-			RequestID:   request.RequestID,
-			TenantID:    request.TenantID,
-			ConnectorID: request.ConnectorID,
-			Error:       errorPayload{Code: directoryErrorCode(err), Retryable: true},
+			Type:                "verify.error",
+			Protocol:            Protocol,
+			ProtocolVersion:     ProtocolVersion,
+			MinSupportedVersion: MinSupportedVersion,
+			ID:                  request.ID,
+			RequestID:           request.RequestID,
+			TenantID:            request.TenantID,
+			ConnectorID:         request.ConnectorID,
+			Error:               errorPayload{Code: directoryErrorCode(err), Retryable: true},
 		})
 		return
 	}
@@ -321,27 +352,31 @@ func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, 
 	credentialResult := result.CredentialResult()
 	if credentialResult == directory.CredentialResultSourceUnavailable {
 		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:        "verify.error",
-			Protocol:    Protocol,
-			ID:          request.ID,
-			RequestID:   request.RequestID,
-			TenantID:    request.TenantID,
-			ConnectorID: request.ConnectorID,
-			Error:       errorPayload{Code: result.SafeReason(), Retryable: true},
+			Type:                "verify.error",
+			Protocol:            Protocol,
+			ProtocolVersion:     ProtocolVersion,
+			MinSupportedVersion: MinSupportedVersion,
+			ID:                  request.ID,
+			RequestID:           request.RequestID,
+			TenantID:            request.TenantID,
+			ConnectorID:         request.ConnectorID,
+			Error:               errorPayload{Code: result.SafeReason(), Retryable: true},
 		})
 		return
 	}
 
 	response := verifyResponseMessage{
-		Type:            "verify.response",
-		Protocol:        Protocol,
-		ID:              request.ID,
-		RequestID:       request.RequestID,
-		TenantID:        request.TenantID,
-		ConnectorID:     request.ConnectorID,
-		Result:          string(credentialResult),
-		Reason:          result.SafeReason(),
-		DirectoryStatus: "ok",
+		Type:                "verify.response",
+		Protocol:            Protocol,
+		ProtocolVersion:     ProtocolVersion,
+		MinSupportedVersion: MinSupportedVersion,
+		ID:                  request.ID,
+		RequestID:           request.RequestID,
+		TenantID:            request.TenantID,
+		ConnectorID:         request.ConnectorID,
+		Result:              string(credentialResult),
+		Reason:              result.SafeReason(),
+		DirectoryStatus:     "ok",
 	}
 	if credentialResult == directory.CredentialResultSuccess {
 		response.Reason = ""
@@ -363,6 +398,10 @@ func (c *Client) writeJSON(ctx context.Context, conn *websocket.Conn, value any)
 func (c *Client) validVerifyRequest(request verifyRequestMessage) bool {
 	return request.Type == "verify.request" &&
 		request.Protocol == Protocol &&
+		relayProtocolCompatible(envelope{
+			ProtocolVersion:     request.ProtocolVersion,
+			MinSupportedVersion: request.MinSupportedVersion,
+		}) &&
 		request.ID != "" &&
 		request.RequestID != "" &&
 		request.TenantID == c.config.TenantID &&
@@ -372,12 +411,14 @@ func (c *Client) validVerifyRequest(request verifyRequestMessage) bool {
 }
 
 type AuthCanonicalInput struct {
-	TenantID    string
-	ConnectorID string
-	KeyID       string
-	ChallengeID string
-	Nonce       string
-	Timestamp   string
+	TenantID            string
+	ConnectorID         string
+	KeyID               string
+	ProtocolVersion     int
+	MinSupportedVersion int
+	ChallengeID         string
+	Nonce               string
+	Timestamp           string
 }
 
 func AuthCanonical(input AuthCanonicalInput) string {
@@ -385,6 +426,8 @@ func AuthCanonical(input AuthCanonicalInput) string {
 		input.TenantID + "\n" +
 		input.ConnectorID + "\n" +
 		input.KeyID + "\n" +
+		fmt.Sprintf("%d", input.ProtocolVersion) + "\n" +
+		fmt.Sprintf("%d", input.MinSupportedVersion) + "\n" +
 		input.ChallengeID + "\n" +
 		input.Nonce + "\n" +
 		input.Timestamp
@@ -410,6 +453,40 @@ func parseRelayURL(raw string) (*url.URL, error) {
 		}
 	}
 	return nil, errors.New("relay URL must use wss:// except ws://localhost for local development")
+}
+
+func relayProtocolCompatible(env envelope) bool {
+	return env.ProtocolVersion >= MinSupportedVersion &&
+		env.MinSupportedVersion <= ProtocolVersion
+}
+
+func validateRelayURLBinding(raw string, tenantID string, connectorID string) error {
+	parsed, err := parseRelayURL(raw)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(parts) < 6 {
+		return errors.New("relay URL must include /api/auth/directory-relay/connect/{tenant_id}/{connector_id}")
+	}
+	if strings.Join(parts[len(parts)-6:len(parts)-2], "/") != "api/auth/directory-relay/connect" {
+		return errors.New("relay URL must include /api/auth/directory-relay/connect/{tenant_id}/{connector_id}")
+	}
+	rawTenantID, err := url.PathUnescape(parts[len(parts)-2])
+	if err != nil {
+		return errors.New("relay URL tenant id is invalid")
+	}
+	rawConnectorID, err := url.PathUnescape(parts[len(parts)-1])
+	if err != nil {
+		return errors.New("relay URL connector id is invalid")
+	}
+	if rawTenantID != tenantID {
+		return errors.New("relay URL tenant id does not match configured tenant_id")
+	}
+	if rawConnectorID != connectorID {
+		return errors.New("relay URL connector id does not match configured connector_id")
+	}
+	return nil
 }
 
 func directoryErrorCode(err error) string {

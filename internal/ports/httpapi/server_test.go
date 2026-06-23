@@ -65,6 +65,82 @@ func TestVersionEndpoint(t *testing.T) {
 	}
 }
 
+func TestHealthDetailsDoesNotExposeSecretsOrDirectoryReachability(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/healthz/details", nil)
+	rec := httptest.NewRecorder()
+
+	newTestHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var body healthDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(body.Tenants) != 1 {
+		t.Fatalf("Tenants len = %d", len(body.Tenants))
+	}
+	if body.Tenants[0].ConnectorID != "ww_tenant_a" {
+		t.Fatalf("ConnectorID = %q", body.Tenants[0].ConnectorID)
+	}
+	if strings.Contains(rec.Body.String(), "active-secret") || strings.Contains(rec.Body.String(), "audit-secret") {
+		t.Fatal("health details leaked secret material")
+	}
+}
+
+func TestOperationsEndpointsRequireLoopbackOrExplicitExposure(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.RemoteAddr = "203.0.113.10:49152"
+	rec := httptest.NewRecorder()
+
+	NewHandler("test-version").ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+
+	loopbackReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	loopbackReq.RemoteAddr = "127.0.0.1:49152"
+	loopbackRec := httptest.NewRecorder()
+	NewHandler("test-version").ServeHTTP(loopbackRec, loopbackReq)
+	if loopbackRec.Code != http.StatusOK {
+		t.Fatalf("loopback status = %d, want %d", loopbackRec.Code, http.StatusOK)
+	}
+}
+
+func TestMetricsEndpointCountsVerifyEventsWithoutUserIdentifiers(t *testing.T) {
+	handler := newTestHandler()
+	req := signedVerifyPasswordRequest(t, `{
+		"request_id":"req_123",
+		"tenant_id":"tenant-a",
+		"connector_id":"ww_tenant_a",
+		"username":"alice",
+		"password":"wrong",
+		"attribute_names":["uid"]
+	}`, "nonce_123", []byte("active-secret"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	handler.ServeHTTP(metricsRec, metricsReq)
+
+	if metricsRec.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d", metricsRec.Code)
+	}
+	body := metricsRec.Body.String()
+	if !strings.Contains(body, `wordwarden_events_total{event_type="directory_password.verify.failure"`) {
+		t.Fatalf("metrics body missing failure counter: %s", body)
+	}
+	if strings.Contains(body, "alice") || strings.Contains(body, "wrong") || strings.Contains(body, "active-secret") {
+		t.Fatalf("metrics leaked sensitive request data: %s", body)
+	}
+}
+
 func TestVerifyPasswordSuccess(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
@@ -671,14 +747,16 @@ func newTestHandlerWithAudit(sink audit.Sink) http.Handler {
 				AuditHashSecret: []byte("audit-secret"),
 			},
 		},
-		Audit: sink,
+		Audit:            sink,
+		ExposeOperations: true,
 	})
 }
 
 func newTestHandlerWithRuntime(runtime TenantRuntime) http.Handler {
 	return NewHandler("test-version", HandlerOptions{
-		Tenants: map[string]TenantRuntime{"ww_tenant_a": runtime},
-		Audit:   audit.DiscardSink{},
+		Tenants:          map[string]TenantRuntime{"ww_tenant_a": runtime},
+		Audit:            audit.DiscardSink{},
+		ExposeOperations: true,
 	})
 }
 

@@ -16,9 +16,15 @@ deployment:
 server:
   listen: "127.0.0.1:8080"
   public_base_url: "https://wordwarden.example.com"
+  expose_operations: false
   tls:
     enabled: false
 ```
+
+`/healthz/details` and `/metrics` are operational endpoints. They are available
+to loopback clients by default. Set `server.expose_operations: true` only when
+another network control, such as a reverse proxy allowlist or private network,
+protects those endpoints.
 
 `single_tenant` is the beta default and requires exactly one tenant. The schema
 already supports `tenants:` as an array so multi-tenant separation is explicit
@@ -60,6 +66,9 @@ authrim:
 ```
 
 The relay uses the active HMAC key to answer Authrim's short-lived challenge.
+For managed relay secrets, Authrim Admin UI issues a one-time `wwsec_...` value.
+Store that value in the configured `secret_ref`; do not paste the secret value
+directly into YAML.
 `wss://` is required in production. `ws://localhost` is accepted for local
 development only.
 
