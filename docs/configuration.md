@@ -34,6 +34,35 @@ Secret references use one of:
 Secret values are resolved only for commands that need them. `config validate`
 validates reference syntax without reading secret values.
 
+## Authrim Relay
+
+Wordwarden supports two Authrim connection directions:
+
+- Direct HTTPS: Authrim calls `POST /v1/auth/verify-password` on Wordwarden.
+- Outbound Relay: Wordwarden opens a WebSocket to Authrim and receives
+  verification requests through that connection.
+
+Use outbound relay when the directory-side network should not expose a public
+Wordwarden endpoint:
+
+```yaml
+authrim:
+  hmac_keys:
+    active:
+      kid: "kid_2026_06"
+      secret_ref: "env:AUTHRIM_WORDWARDEN_SECRET_ACTIVE"
+  audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+  relay:
+    enabled: true
+    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"
+    reconnect_min_ms: 1000
+    reconnect_max_ms: 30000
+```
+
+The relay uses the active HMAC key to answer Authrim's short-lived challenge.
+`wss://` is required in production. `ws://localhost` is accepted for local
+development only.
+
 ## LDAP Lookup Modes
 
 ## LDAP Transport and Endpoints

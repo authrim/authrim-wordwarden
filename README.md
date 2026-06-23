@@ -23,6 +23,7 @@ Current implementation slice:
 - `wordwarden ldap test`
 - HMAC canonical request verifier with active/previous key support
 - `POST /v1/auth/verify-password`
+- outbound Authrim Relay WebSocket client for deployments without inbound exposure
 - LDAP lookup modes: `search_then_bind`, `dn_template`, `direct_bind`
 - local structured audit events with redacted username hashing
 - username preprocessing

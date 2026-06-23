@@ -9,8 +9,12 @@ Use `docs/configuration.md` for field-level behavior and validation rules.
 
 ## Where Authrim Connection Settings Live
 
-Wordwarden does not need the remote Authrim URL in Alpha because the runtime
-request direction is Authrim -> Wordwarden.
+Wordwarden needs different Authrim-side settings depending on transport:
+
+- Direct HTTPS: Authrim calls Wordwarden, so Wordwarden does not need the remote
+  Authrim URL.
+- Outbound Relay: Wordwarden calls Authrim, so `authrim.relay.url` must point to
+  the Authrim relay WebSocket endpoint.
 
 Configure the Wordwarden endpoint in Authrim tenant settings:
 
@@ -19,6 +23,7 @@ authentication-methods.directory_password.enabled=true
 authentication-methods.directory_password.connector_id=campus
 
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
+directory-connectors.campus.transport=direct
 directory-connectors.campus.auth_mode=hmac
 directory-connectors.campus.connector_id=ww_tenant_a
 directory-connectors.campus.key_id=kid_2026_06
@@ -41,9 +46,27 @@ authrim:
 hostname Authrim uses as `directory-connectors.<id>.endpoint_url`; it is not the
 Authrim login URL.
 
-In the current Authrim Alpha integration, these settings are tenant-scoped
-settings stored by Authrim's configuration system. Admin UI editing is planned
-for a later milestone.
+For outbound relay, configure Authrim with `transport=relay` and omit
+`endpoint_url`:
+
+```text
+directory-connectors.campus.transport=relay
+directory-connectors.campus.auth_mode=hmac
+directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.key_id=kid_2026_06
+directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
+directory-connectors.campus.timeouts.request_ms=3000
+directory-connectors.campus.attribute_names=mail,displayName,uid
+```
+
+Then configure Wordwarden with the Authrim relay URL:
+
+```yaml
+authrim:
+  relay:
+    enabled: true
+    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"
+```
 
 ## Example 1: Cloudflare Tunnel with LDAPS
 

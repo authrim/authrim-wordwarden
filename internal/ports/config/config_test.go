@@ -199,6 +199,39 @@ func TestParseAllowsConnectionPool(t *testing.T) {
 	}
 }
 
+func TestParseAllowsRelayConfig(t *testing.T) {
+	raw := strings.Replace(validConfig, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"`, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+      relay:
+        enabled: true
+        url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"`, 1)
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !cfg.Tenants[0].Authrim.Relay.Enabled {
+		t.Fatal("Authrim.Relay.Enabled = false")
+	}
+	if cfg.Tenants[0].Authrim.Relay.ReconnectMinMS != 1000 {
+		t.Fatalf("ReconnectMinMS = %d", cfg.Tenants[0].Authrim.Relay.ReconnectMinMS)
+	}
+}
+
+func TestParseRejectsRelayHTTPURL(t *testing.T) {
+	raw := strings.Replace(validConfig, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"`, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+      relay:
+        enabled: true
+        url: "http://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want relay URL validation error")
+	}
+	if !strings.Contains(err.Error(), "url must use wss://") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
 func TestParseRejectsUnknownField(t *testing.T) {
 	_, err := Parse([]byte(validConfig + "\nunknown_field: true\n"))
 	if err == nil {

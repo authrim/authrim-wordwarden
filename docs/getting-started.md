@@ -216,6 +216,7 @@ authentication-methods.directory_password.connector_id=campus
 ```
 
 ```text
+directory-connectors.campus.transport=direct
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.auth_mode=hmac
 directory-connectors.campus.connector_id=ww_tenant_a
@@ -229,10 +230,28 @@ The Authrim-side HMAC secret must match the active Wordwarden key for the same
 tenant and connector. Authrim should see only the connector endpoint and secret
 reference, not LDAP bind credentials.
 
-Wordwarden does not store the remote Authrim URL in Alpha. Authrim calls
-Wordwarden, and Wordwarden authenticates those calls using the shared HMAC key
-and connector id. `server.public_base_url` is the public Wordwarden URL, not the
-Authrim login URL.
+For outbound relay, Authrim does not need a Wordwarden public endpoint:
+
+```text
+directory-connectors.campus.transport=relay
+directory-connectors.campus.auth_mode=hmac
+directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.key_id=kid-active
+directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
+```
+
+Then set the matching Wordwarden relay URL:
+
+```yaml
+authrim:
+  relay:
+    enabled: true
+    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"
+```
+
+In direct mode, `server.public_base_url` is the public Wordwarden URL, not the
+Authrim login URL. In relay mode, `authrim.relay.url` is the Authrim login/relay
+URL, and Wordwarden opens the connection outward.
 
 ## Verify Before Enabling Users
 
@@ -242,7 +261,8 @@ Use this order:
 2. `wordwarden ldap test --tenant <tenant_id>`
 3. `wordwarden ldap test --tenant <tenant_id> --username <user> --password-stdin`
 4. `curl -fsS http://127.0.0.1:8080/healthz`
-5. public or tunnel `GET /healthz`
+5. public or tunnel `GET /healthz`, or confirm the relay connection in Authrim
+   for relay transport
 6. Authrim directory password login
 7. confirm Authrim session contains `amr=["pwd","directory"]`
 

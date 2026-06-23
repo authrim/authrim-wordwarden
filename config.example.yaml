@@ -21,6 +21,11 @@ tenants:
           kid: "kid_2026_05"
           secret_ref: "file:/etc/authrim-wordwarden/secrets/hmac-previous"
       audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+      relay:
+        enabled: false
+        url: ""
+        reconnect_min_ms: 1000
+        reconnect_max_ms: 30000
     ldap:
       url: "ldaps://ldap.example.com:636"
       tls:

@@ -47,6 +47,14 @@ type TenantConfig struct {
 type AuthrimConfig struct {
 	HMACKeys           HMACKeysConfig `yaml:"hmac_keys"`
 	AuditHashSecretRef string         `yaml:"audit_hash_secret_ref"`
+	Relay              RelayConfig    `yaml:"relay"`
+}
+
+type RelayConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	URL            string `yaml:"url"`
+	ReconnectMinMS int    `yaml:"reconnect_min_ms"`
+	ReconnectMaxMS int    `yaml:"reconnect_max_ms"`
 }
 
 type HMACKeysConfig struct {
@@ -187,6 +195,12 @@ func applyDefaults(cfg *Config) {
 		if cfg.Tenants[i].Timeouts.RequestMS == 0 {
 			cfg.Tenants[i].Timeouts.RequestMS = 2500
 		}
+		if cfg.Tenants[i].Authrim.Relay.ReconnectMinMS == 0 {
+			cfg.Tenants[i].Authrim.Relay.ReconnectMinMS = 1000
+		}
+		if cfg.Tenants[i].Authrim.Relay.ReconnectMaxMS == 0 {
+			cfg.Tenants[i].Authrim.Relay.ReconnectMaxMS = 30000
+		}
 		if cfg.Tenants[i].Protection.MaxConcurrentRequests == 0 {
 			cfg.Tenants[i].Protection.MaxConcurrentRequests = 8
 		}
@@ -263,6 +277,7 @@ func Validate(cfg *Config) error {
 			validateSecretRef(&problems, prefix+".authrim.hmac_keys.previous.secret_ref", tenant.Authrim.HMACKeys.Previous.SecretRef)
 		}
 		validateSecretRef(&problems, prefix+".authrim.audit_hash_secret_ref", tenant.Authrim.AuditHashSecretRef)
+		validateRelay(&problems, prefix+".authrim.relay", tenant.Authrim.Relay)
 		validateLDAP(&problems, prefix+".ldap", tenant.LDAP)
 		validateTimeouts(&problems, prefix+".timeouts", tenant.Timeouts)
 		if tenant.Protection.MaxConcurrentRequests <= 0 {
@@ -292,6 +307,39 @@ func validateProtection(problems *[]string, prefix string, protection Protection
 	}
 	if protection.DirectoryErrorLimit <= 0 {
 		*problems = append(*problems, prefix+".directory_error_limit must be positive")
+	}
+}
+
+func validateRelay(problems *[]string, prefix string, relay RelayConfig) {
+	if !relay.Enabled {
+		return
+	}
+	if relay.URL == "" {
+		*problems = append(*problems, prefix+".url is required when relay is enabled")
+		return
+	}
+	parsed, err := url.Parse(relay.URL)
+	if err != nil || parsed.Host == "" {
+		*problems = append(*problems, prefix+".url must be a valid URL")
+		return
+	}
+	switch parsed.Scheme {
+	case "wss":
+	case "ws":
+		if parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1" {
+			*problems = append(*problems, prefix+".url must use wss:// except ws://localhost for local development")
+		}
+	default:
+		*problems = append(*problems, prefix+".url must use wss:// except ws://localhost for local development")
+	}
+	if relay.ReconnectMinMS <= 0 {
+		*problems = append(*problems, prefix+".reconnect_min_ms must be positive")
+	}
+	if relay.ReconnectMaxMS <= 0 {
+		*problems = append(*problems, prefix+".reconnect_max_ms must be positive")
+	}
+	if relay.ReconnectMinMS > relay.ReconnectMaxMS {
+		*problems = append(*problems, prefix+".reconnect_min_ms must be less than or equal to reconnect_max_ms")
 	}
 }
 

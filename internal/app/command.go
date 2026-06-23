@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/authrim/authrim-wordwarden/internal/adapters/auditlog"
 	hmacadapter "github.com/authrim/authrim-wordwarden/internal/adapters/hmac"
 	ldapadapter "github.com/authrim/authrim-wordwarden/internal/adapters/ldap"
+	relayadapter "github.com/authrim/authrim-wordwarden/internal/adapters/relay"
 	secretsadapter "github.com/authrim/authrim-wordwarden/internal/adapters/secrets"
 	"github.com/authrim/authrim-wordwarden/internal/core/directory"
 	"github.com/authrim/authrim-wordwarden/internal/ports/config"
@@ -62,6 +64,11 @@ func newServeCommand(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			serveCtx, cancelServe := context.WithCancel(cmd.Context())
+			defer cancelServe()
+			if err := startRelayClients(serveCtx, cfg, runtimes, cmd.ErrOrStderr()); err != nil {
+				return err
+			}
 
 			server := &http.Server{
 				Addr:              cfg.Server.Listen,
@@ -94,6 +101,7 @@ func newServeCommand(configPath *string) *cobra.Command {
 				case sig := <-reloadCh:
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "received %s, config reload is not supported in alpha; restart required\n", sig)
 				case sig := <-stopCh:
+					cancelServe()
 					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					if err := server.Shutdown(shutdownCtx); err != nil {
@@ -269,6 +277,50 @@ func buildTenantRuntimes(ctx context.Context, cfg *config.Config) (map[string]ht
 	}
 
 	return runtimes, nil
+}
+
+func startRelayClients(
+	ctx context.Context,
+	cfg *config.Config,
+	runtimes map[string]httpapi.TenantRuntime,
+	logWriter io.Writer,
+) error {
+	resolver := secretsadapter.NewResolver()
+	logger := slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	for _, tenant := range cfg.Tenants {
+		if !tenant.Authrim.Relay.Enabled {
+			continue
+		}
+		runtime, ok := runtimes[tenant.ConnectorID]
+		if !ok {
+			return fmt.Errorf("tenant %s relay runtime not found for connector %s", tenant.TenantID, tenant.ConnectorID)
+		}
+		activeSecret, err := resolveSecretBytes(ctx, resolver, tenant.Authrim.HMACKeys.Active.SecretRef)
+		if err != nil {
+			return fmt.Errorf("tenant %s relay HMAC secret: %w", tenant.TenantID, err)
+		}
+		client, err := relayadapter.NewClient(relayadapter.Config{
+			URL:            tenant.Authrim.Relay.URL,
+			TenantID:       tenant.TenantID,
+			ConnectorID:    tenant.ConnectorID,
+			KeyID:          tenant.Authrim.HMACKeys.Active.KID,
+			Secret:         activeSecret,
+			Directory:      runtime.Directory,
+			RequestTimeout: time.Duration(runtime.RequestTimeoutMS) * time.Millisecond,
+			Concurrency:    runtime.ConcurrencyLimit,
+			ReconnectMin:   time.Duration(tenant.Authrim.Relay.ReconnectMinMS) * time.Millisecond,
+			ReconnectMax:   time.Duration(tenant.Authrim.Relay.ReconnectMaxMS) * time.Millisecond,
+			Logger:         logger,
+		})
+		if err != nil {
+			return fmt.Errorf("tenant %s relay client: %w", tenant.TenantID, err)
+		}
+		go func() {
+			_ = client.Run(ctx)
+		}()
+	}
+	return nil
 }
 
 func resolveSecretBytes(ctx context.Context, resolver secretsadapter.Resolver, raw string) ([]byte, error) {
