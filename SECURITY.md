@@ -52,4 +52,3 @@ Reports that demonstrate leakage of any of the following are security-sensitive:
 
 Wordwarden logs and audit events are expected to avoid raw passwords. Usernames
 should be hashed in audit events when possible.
-

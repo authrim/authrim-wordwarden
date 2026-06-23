@@ -108,4 +108,3 @@ Known initial limits:
   passwords
 - no shared replay store across multiple Wordwarden instances
 - complex group mapping remains intentionally limited
-

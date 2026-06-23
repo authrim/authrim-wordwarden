@@ -48,4 +48,3 @@ Use concise PRs with:
 - tests run
 - security considerations when the change touches authentication, LDAP, relay,
   logging, secrets, or tenant boundaries
-
