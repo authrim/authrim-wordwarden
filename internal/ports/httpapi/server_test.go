@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -406,6 +407,46 @@ func TestVerifyPasswordWritesRedactedAuditEvent(t *testing.T) {
 	if event.UsernameHash == "alice" {
 		t.Fatal("UsernameHash contains raw username")
 	}
+	rawEvent, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal(event) error = %v", err)
+	}
+	if bytes.Contains(rawEvent, []byte("correct")) {
+		t.Fatalf("audit event contains raw password: %s", rawEvent)
+	}
+	if bytes.Contains(rawEvent, []byte(`"username":"alice"`)) || bytes.Contains(rawEvent, []byte("alice")) {
+		t.Fatalf("audit event contains raw username: %s", rawEvent)
+	}
+}
+
+func BenchmarkVerifyPasswordSuccess(b *testing.B) {
+	handler := newTestHandler()
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		requestID := fmt.Sprintf("req_bench_%d", i)
+		nonce := fmt.Sprintf("nonce_bench_%d", i)
+		body := fmt.Sprintf(`{
+			"request_id":%q,
+			"tenant_id":"tenant-a",
+			"connector_id":"ww_tenant_a",
+			"username":"alice",
+			"password":"correct",
+			"attribute_names":["uid","mail"]
+		}`, requestID)
+		req := signedVerifyPasswordRequestWithID(
+			b,
+			body,
+			requestID,
+			nonce,
+			[]byte("active-secret"),
+		)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			b.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+		}
+	}
 }
 
 func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
@@ -648,15 +689,21 @@ func testVerifier() hmacadapter.Verifier {
 	}).WithClock(func() time.Time { return now })
 }
 
-func signedVerifyPasswordRequest(t *testing.T, body string, nonce string, secret []byte) *http.Request {
+type testHelper interface {
+	Helper()
+	Fatal(args ...any)
+	Fatalf(format string, args ...any)
+}
+
+func signedVerifyPasswordRequest(t testHelper, body string, nonce string, secret []byte) *http.Request {
 	return signedVerifyPasswordRequestWithID(t, body, "req_123", nonce, secret)
 }
 
-func signedVerifyPasswordRequestWithID(t *testing.T, body string, requestID string, nonce string, secret []byte) *http.Request {
+func signedVerifyPasswordRequestWithID(t testHelper, body string, requestID string, nonce string, secret []byte) *http.Request {
 	return signedVerifyPasswordRequestForConnector(t, body, requestID, nonce, "ww_tenant_a", secret)
 }
 
-func signedVerifyPasswordRequestForConnector(t *testing.T, body string, requestID string, nonce string, connectorID string, secret []byte) *http.Request {
+func signedVerifyPasswordRequestForConnector(t testHelper, body string, requestID string, nonce string, connectorID string, secret []byte) *http.Request {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify-password", bytes.NewBufferString(body))
@@ -672,7 +719,7 @@ func signedVerifyPasswordRequestForConnector(t *testing.T, body string, requestI
 	return req
 }
 
-func resignRequest(t *testing.T, req *http.Request, body []byte, secret []byte) {
+func resignRequest(t testHelper, req *http.Request, body []byte, secret []byte) {
 	t.Helper()
 	canonical, err := hmacadapter.CanonicalRequest(
 		req,

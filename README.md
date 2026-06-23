@@ -41,6 +41,7 @@ The guarded OpenLDAP integration test is available under
 - [Configuration](docs/configuration.md)
 - [Configuration examples](docs/config-examples.md)
 - [Passwordless migration](docs/passwordless-migration.md)
+- [Production hardening](docs/production-hardening.md)
 - [Operations](docs/operations.md)
 - [Cloudflare Tunnel deployment](docs/cloudflare-tunnel.md)
 - [Public HTTPS deployment](docs/public-https.md)

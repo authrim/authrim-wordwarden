@@ -190,3 +190,7 @@ Tunnel and Public HTTPS guides are under `docs/`.
 
 These samples are starting points. Production deployments should add host-level
 monitoring, log collection, secret management, and certificate rotation.
+
+For the production hardening checklist, threat model summary, load testing,
+secret rotation, high availability, compatibility matrix, and incident response
+runbook, see `docs/production-hardening.md`.
