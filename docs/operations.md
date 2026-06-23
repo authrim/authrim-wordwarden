@@ -1,6 +1,6 @@
 # Operations
 
-Authrim Wordwarden is an Alpha directory connector. It is designed to run near
+Authrim Wordwarden is a beta directory connector. It is designed to run near
 LDAP/AD and expose only the password verification endpoint needed by Authrim.
 
 ## Runtime Model
@@ -11,7 +11,7 @@ LDAP/AD and expose only the password verification endpoint needed by Authrim.
 - Keep tenant and connector ids stable.
 - Restart the process after config, secret reference, LDAP CA, or tenant changes.
 
-`SIGHUP` does not reload configuration in Alpha. It only logs that restart is
+`SIGHUP` does not reload configuration in the current beta. It only logs that restart is
 required.
 
 ## TLS
@@ -88,7 +88,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 Expected local response:
 
 ```json
-{"ok":true,"connector":"authrim-wordwarden","version":"0.1.0"}
+{"ok":true,"connector":"authrim-wordwarden","version":"0.1.0-beta.1"}
 ```
 
 `GET /version` returns the same connector identity and version metadata without
@@ -112,7 +112,7 @@ or `directory_password.config.error`.
 
 ## Audit
 
-Alpha audit events are written as local JSON events. Raw passwords are never
+Beta audit events are written as local JSON events. Raw passwords are never
 logged. Usernames are represented by `username_hash` when the audit hash secret
 is configured.
 

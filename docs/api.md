@@ -1,6 +1,6 @@
 # Authrim Wordwarden API
 
-This document describes the Alpha HTTP contract between Authrim and Authrim
+This document describes the beta HTTP contract between Authrim and Authrim
 Wordwarden.
 
 ## Authentication
@@ -161,7 +161,7 @@ for this result.
 
 ## Health
 
-`GET /healthz` is intentionally shallow in Alpha. It returns process status and
+`GET /healthz` is intentionally shallow in the current beta. It returns process status and
 version only; it does not test LDAP reachability.
 
 Example response:
@@ -170,7 +170,7 @@ Example response:
 {
   "ok": true,
   "connector": "authrim-wordwarden",
-  "version": "0.1.0"
+  "version": "0.1.0-beta.1"
 }
 ```
 
@@ -184,6 +184,6 @@ Example response:
 ```json
 {
   "connector": "authrim-wordwarden",
-  "version": "0.1.0"
+  "version": "0.1.0-beta.1"
 }
 ```

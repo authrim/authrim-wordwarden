@@ -1,7 +1,7 @@
 # Production Hardening
 
-This guide is the M7 production hardening checklist for Authrim Wordwarden. It
-does not make the Alpha connector a fully managed service. It defines the
+This guide is the production hardening checklist for Authrim Wordwarden. It
+does not make the beta connector a fully managed service. It defines the
 security and operations boundary that must be true before broader pilots.
 
 ## Threat Model Summary

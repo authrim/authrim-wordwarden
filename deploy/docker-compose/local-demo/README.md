@@ -1,7 +1,7 @@
 # Local Docker Compose Demo
 
 This demo starts Authrim Wordwarden and a local OpenLDAP fixture. It is intended
-for local verification of the Alpha password verification path, not for
+for local verification of the beta password verification path, not for
 production.
 
 The demo user is:
@@ -34,7 +34,7 @@ curl http://127.0.0.1:8080/healthz
 Expected response:
 
 ```json
-{"ok":true,"connector":"authrim-wordwarden","version":"0.1.0"}
+{"ok":true,"connector":"authrim-wordwarden","version":"0.1.0-beta.1"}
 ```
 
 Run an LDAP diagnostic through the Wordwarden container:

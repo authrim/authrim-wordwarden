@@ -26,7 +26,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.0"
+const version = "0.1.0-beta.1"
 
 func Execute() error {
 	return NewRootCommand().Execute()
@@ -99,7 +99,7 @@ func newServeCommand(configPath *string) *cobra.Command {
 			for {
 				select {
 				case sig := <-reloadCh:
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "received %s, config reload is not supported in alpha; restart required\n", sig)
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "received %s, config reload is not supported in this beta; restart required\n", sig)
 				case sig := <-stopCh:
 					cancelServe()
 					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

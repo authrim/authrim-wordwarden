@@ -92,7 +92,7 @@ journalctl -u authrim-wordwarden -f
 
 ## Restart Boundary
 
-Alpha does not reload configuration. Restart after changing any of:
+The current beta does not reload configuration. Restart after changing any of:
 
 - `config.yaml`
 - HMAC secret refs or values

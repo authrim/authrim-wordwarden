@@ -1,6 +1,6 @@
 # Cloudflare Tunnel Deployment
 
-This guide describes the Alpha deployment shape for exposing Authrim Wordwarden
+This guide describes the beta deployment shape for exposing Authrim Wordwarden
 to Authrim through Cloudflare Tunnel.
 
 Cloudflare Tunnel is optional. It is useful when an organization does not want to
@@ -113,7 +113,7 @@ curl -fsS https://wordwarden.example.edu/healthz
   and `directory_password.verify.error`.
 
 Cloudflare Access Service Tokens can be added in front of the Tunnel hostname as
-extra protection, but they are not the Alpha baseline because Wordwarden must
+extra protection, but they are not the beta baseline because Wordwarden must
 remain cloud-agnostic.
 
 If Access Service Tokens are enabled, Authrim must add the service token headers

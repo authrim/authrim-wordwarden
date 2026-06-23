@@ -9,7 +9,13 @@ audit correlation, and identity mapping.
 
 ## Status
 
-Authrim Wordwarden is in early alpha.
+Authrim Wordwarden is preparing for public beta. The first public beta target is
+`v0.1.0-beta.1`.
+
+The connector is intended for pilots where operators can run a small service
+near LDAP/AD and understand the directory, network, TLS, and secret-management
+boundaries. It is not a managed directory service and it does not turn Authrim
+into a password database.
 
 Current implementation slice:
 
@@ -35,15 +41,58 @@ Current implementation slice:
 The guarded OpenLDAP integration test is available under
 `test/integration/openldap`.
 
+## Deployment Modes
+
+Wordwarden supports three deployment shapes:
+
+| Mode | Inbound exposure | Typical use |
+| --- | --- | --- |
+| Direct HTTPS | Wordwarden exposes a hardened HTTPS endpoint | Existing reverse proxy, firewall, certificate, and monitoring operations are already mature. |
+| Cloudflare Tunnel | Wordwarden stays private and `cloudflared` opens the outbound tunnel | Operators want a managed public hostname without publishing the connector host directly. |
+| Authrim Relay | Wordwarden opens an outbound WebSocket to Authrim | The directory-side network should not expose an inbound connector endpoint. |
+
+In every mode, HMAC remains the tenant/connector authentication boundary. Relay
+mode reduces inbound exposure; it does not replace connector authentication.
+
+## Security Model
+
+- Wordwarden does not store plaintext passwords or password hashes.
+- LDAP/AD remains the source of password truth.
+- Password verification happens close to the organization's directory.
+- Authrim stores sessions, profile data, Passkeys, Email Code state, and
+  federation state, but not directory password credentials for this path.
+- HMAC keys are tenant/connector scoped and support active/previous key
+  rotation.
+- Runtime LDAP paths require TLS verification; `--insecure` is diagnostic-only.
+- Logs and audit events must not contain raw passwords.
+
+See [SECURITY.md](SECURITY.md) and
+[Production hardening](docs/production-hardening.md) before public pilots.
+
+## Compatibility
+
+`v0.1.0-beta.1` targets Authrim `0.3.2` or later with Directory Authentication
+and Authrim Relay support enabled. Older Authrim deployments can use the direct
+HTTPS connector path only if they include the Directory Password login
+integration.
+
+## Public Demo Paths
+
+- Local OpenLDAP demo for a fully local verification path.
+- Direct HTTPS or Cloudflare Tunnel demo for inbound connector deployments.
+- Authrim Relay demo for outbound-only connector deployments.
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
+- [Architecture overview](docs/architecture.md)
 - [API contract](docs/api.md)
 - [Configuration](docs/configuration.md)
 - [Configuration examples](docs/config-examples.md)
 - [Passwordless migration](docs/passwordless-migration.md)
 - [Production hardening](docs/production-hardening.md)
 - [Operations](docs/operations.md)
+- [Release process](docs/release.md)
 - [Cloudflare Tunnel deployment](docs/cloudflare-tunnel.md)
 - [Public HTTPS deployment](docs/public-https.md)
 - [Deployment samples](deploy/README.md)
@@ -66,7 +115,7 @@ docker run --rm -p 8080:8080 \
 ```
 
 Deployment samples are under `deploy/`. Configuration changes require a process
-restart in Alpha.
+restart in the current beta.
 
 Health check:
 

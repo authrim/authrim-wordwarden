@@ -292,7 +292,7 @@ Before production:
 - Wordwarden logs are collected.
 - Operators know where to inspect `directory_password.verify.*`,
   `directory_password.hmac.failure`, and `directory_password.replay.detected`.
-- Restart procedure is documented; Alpha does not reload config in place.
+- Restart procedure is documented; the current beta does not reload config in place.
 - Authrim login method discovery does not expose connector endpoint or secret
   details to browsers.
 

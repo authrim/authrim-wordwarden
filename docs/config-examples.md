@@ -1,7 +1,7 @@
 # Configuration Examples
 
 This document contains practical Authrim Wordwarden configuration examples for
-real deployments. The examples use the current Alpha schema and avoid features
+real deployments. The examples use the current beta schema and avoid features
 that are planned but not implemented yet, such as advanced group mapping and
 automatic referral chasing.
 

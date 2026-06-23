@@ -3,7 +3,7 @@
 Authrim Wordwarden uses a strict YAML configuration file. Unknown fields are
 rejected, except under the optional `experimental:` namespace.
 
-Configuration changes require a process restart in Alpha.
+Configuration changes require a process restart in the current beta.
 
 For deployment-ready templates, see `docs/config-examples.md`.
 
@@ -20,7 +20,7 @@ server:
     enabled: false
 ```
 
-`single_tenant` is the Alpha default and requires exactly one tenant. The schema
+`single_tenant` is the beta default and requires exactly one tenant. The schema
 already supports `tenants:` as an array so multi-tenant separation is explicit
 from the beginning.
 
@@ -186,7 +186,7 @@ ldap:
       - "ldaps://ldap-referral.example.com:636"
 ```
 
-Alpha does not chase referrals automatically. A directory referral is normalized
+The current beta does not chase referrals automatically. A directory referral is normalized
 as `directory_referral` so operators can fix base DN, filters, or referral
 policy without silent cross-directory traversal.
 
@@ -197,7 +197,7 @@ Attributes returned to Authrim are the intersection of:
 - `attribute_names` requested by Authrim
 - the connector-local `ldap.attributes` allowlist
 
-Wordwarden does not perform role mapping in Alpha.
+Wordwarden does not perform role mapping in the current beta.
 
 ## Group Lookup Primitive
 

@@ -1,6 +1,6 @@
 # Public HTTPS Deployment
 
-This guide describes the Alpha deployment shape for exposing Authrim Wordwarden
+This guide describes the beta deployment shape for exposing Authrim Wordwarden
 as a directly reachable HTTPS service.
 
 Use this shape only when the organization is willing to publish a Wordwarden

@@ -1,6 +1,6 @@
 # Deployment Samples
 
-These samples are intentionally small Alpha deployment references.
+These samples are intentionally small beta deployment references.
 
 Configuration changes require a process restart. `SIGHUP` is accepted only as an
 operator signal that reports reload is not supported yet.
