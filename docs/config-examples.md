@@ -15,8 +15,8 @@ request direction is Authrim -> Wordwarden.
 Configure the Wordwarden endpoint in Authrim tenant settings:
 
 ```text
-login-methods.directory_password.enabled=true
-login-methods.directory_password.connector_id=campus
+authentication-methods.directory_password.enabled=true
+authentication-methods.directory_password.connector_id=campus
 
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.auth_mode=hmac
@@ -119,8 +119,8 @@ tenants:
 Matching Authrim tenant settings:
 
 ```text
-login-methods.directory_password.enabled=true
-login-methods.directory_password.connector_id=campus
+authentication-methods.directory_password.enabled=true
+authentication-methods.directory_password.connector_id=campus
 
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.auth_mode=hmac
@@ -207,8 +207,8 @@ tenants:
 Matching Authrim tenant settings:
 
 ```text
-login-methods.directory_password.enabled=true
-login-methods.directory_password.connector_id=campus
+authentication-methods.directory_password.enabled=true
+authentication-methods.directory_password.connector_id=campus
 
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu:8443
 directory-connectors.campus.auth_mode=hmac

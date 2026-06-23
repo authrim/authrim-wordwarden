@@ -132,7 +132,7 @@ errors. HMAC failures are not allowed to block a connector-wide login path
 because they are unauthenticated.
 
 `policy_required` is not a successful login. Authrim must not create a session
-or trigger password-hash migration side effects for this result.
+for this result.
 
 ## Error Codes
 

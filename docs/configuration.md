@@ -204,4 +204,4 @@ provides standard `data` codes:
 | `775` | `failure` | `account_locked` |
 
 `policy_required` is not a successful login and must not trigger Authrim session
-creation or future password-hash rehash side effects.
+creation.

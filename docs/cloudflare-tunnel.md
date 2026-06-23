@@ -41,8 +41,8 @@ Production traffic from Authrim to the public hostname is HTTPS. The local
 Configure Authrim tenant settings to point to the Tunnel hostname:
 
 ```text
-login-methods.directory_password.enabled=true
-login-methods.directory_password.connector_id=campus
+authentication-methods.directory_password.enabled=true
+authentication-methods.directory_password.connector_id=campus
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.auth_mode=hmac
 directory-connectors.campus.connector_id=ww_tenant_a

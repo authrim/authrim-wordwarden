@@ -65,6 +65,10 @@ Wordwarden verifies the password against LDAP/AD and returns only the result and
 allowed attributes. Authrim then creates the session and continues any
 Passkey, SAML, OIDC, or application login flow.
 
+For migrations that should not keep directory password login enabled long term,
+see `docs/passwordless-migration.md`. Authrim should use SCIM/CSV for profile
+provisioning only and must not import plaintext passwords or password hashes.
+
 ## Understand the Boundaries
 
 Before installing Wordwarden, decide these boundaries:
@@ -83,6 +87,9 @@ Before installing Wordwarden, decide these boundaries:
 
 Wordwarden does not create Authrim sessions, issue SAML/OIDC responses, enroll
 Passkeys, or apply final attribute release policy. Authrim owns those layers.
+Authrim also does not store user password credentials for the Wordwarden
+migration path; use Passkey, Email Code, Directory Connector, or External IdP
+authentication instead.
 
 ## Choose the Network Shape
 
@@ -204,8 +211,8 @@ curl -fsS https://wordwarden.example.edu/healthz
 Authrim needs two related settings groups:
 
 ```text
-login-methods.directory_password.enabled=true
-login-methods.directory_password.connector_id=campus
+authentication-methods.directory_password.enabled=true
+authentication-methods.directory_password.connector_id=campus
 ```
 
 ```text
