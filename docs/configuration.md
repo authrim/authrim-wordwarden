@@ -16,10 +16,15 @@ deployment:
 server:
   listen: "127.0.0.1:8080"
   public_base_url: "https://wordwarden.example.com"
+  state_dir: "/var/lib/authrim-wordwarden"
   expose_operations: false
   tls:
     enabled: false
 ```
+
+`server.state_dir` stores the generated immutable `instance_id` used by Authrim
+Connector Fleet. Keep it on persistent storage. If it is deleted, Wordwarden
+will register as a new instance.
 
 `/healthz/details` and `/metrics` are operational endpoints. They are available
 to loopback clients by default. Set `server.expose_operations: true` only when
@@ -60,7 +65,7 @@ authrim:
   audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
   relay:
     enabled: true
-    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"
+    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"
     reconnect_min_ms: 1000
     reconnect_max_ms: 30000
 ```
@@ -71,6 +76,34 @@ Store that value in the configured `secret_ref`; do not paste the secret value
 directly into YAML.
 `wss://` is required in production. `ws://localhost` is accepted for local
 development only.
+
+## Connector Fleet Heartbeat
+
+Direct HTTPS and tunnel deployments can send a small HMAC-signed heartbeat to
+Authrim so Connector Fleet can show instance health and config drift:
+
+```yaml
+authrim:
+  heartbeat:
+    enabled: true
+    url: "https://login.example.com/api/auth/directory-connectors/heartbeat/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"
+    transport: "tunnel"
+    display_name: "campus-wordwarden-a"
+    key:
+      kid: "hb_2026_06"
+      secret_ref: "env:AUTHRIM_WORDWARDEN_HEARTBEAT_SECRET"
+    previous: null
+    interval_ms: 300000
+    timeout_ms: 5000
+```
+
+Heartbeat uses a key separate from verify-password HMAC keys. The payload
+contains the generated `instance_id`, version, started time, health summary,
+transport, config fingerprint, and drift categories. It does not contain
+passwords, LDAP bind secrets, user attributes, or LDAP internal values.
+
+Relay deployments report fleet registration through the existing WebSocket
+authentication path. They still use the same `server.state_dir` `instance_id`.
 
 ## LDAP Lookup Modes
 

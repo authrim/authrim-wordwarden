@@ -25,7 +25,7 @@ authentication-methods.directory_password.connector_id=campus
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.transport=direct
 directory-connectors.campus.auth_mode=hmac
-directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.connector_id=wwcon_8K4M2Q9F7D3H6P1X
 directory-connectors.campus.key_id=kid_2026_06
 directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
 directory-connectors.campus.timeouts.request_ms=3000
@@ -52,7 +52,7 @@ For outbound relay, configure Authrim with `transport=relay` and omit
 ```text
 directory-connectors.campus.transport=relay
 directory-connectors.campus.auth_mode=hmac
-directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.connector_id=wwcon_8K4M2Q9F7D3H6P1X
 directory-connectors.campus.key_id=kid_2026_06
 directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
 directory-connectors.campus.timeouts.request_ms=3000
@@ -65,7 +65,7 @@ Then configure Wordwarden with the Authrim relay URL:
 authrim:
   relay:
     enabled: true
-    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"
+    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"
 ```
 
 ## Example 1: Cloudflare Tunnel with LDAPS
@@ -88,7 +88,7 @@ server:
 
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:
@@ -147,7 +147,7 @@ authentication-methods.directory_password.connector_id=campus
 
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.auth_mode=hmac
-directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.connector_id=wwcon_8K4M2Q9F7D3H6P1X
 directory-connectors.campus.key_id=kid_2026_06
 directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
 directory-connectors.campus.timeouts.request_ms=3000
@@ -175,7 +175,7 @@ server:
 
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:
@@ -235,7 +235,7 @@ authentication-methods.directory_password.connector_id=campus
 
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu:8443
 directory-connectors.campus.auth_mode=hmac
-directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.connector_id=wwcon_8K4M2Q9F7D3H6P1X
 directory-connectors.campus.key_id=kid_2026_06
 directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
 directory-connectors.campus.timeouts.request_ms=3500
@@ -262,7 +262,7 @@ server:
 
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:
@@ -329,7 +329,7 @@ server:
 
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:
@@ -395,7 +395,7 @@ server:
 
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:

@@ -28,17 +28,23 @@ const (
 )
 
 type Config struct {
-	URL            string
-	TenantID       string
-	ConnectorID    string
-	KeyID          string
-	Secret         []byte
-	Directory      directory.Client
-	RequestTimeout time.Duration
-	Concurrency    int
-	ReconnectMin   time.Duration
-	ReconnectMax   time.Duration
-	Logger         *slog.Logger
+	URL               string
+	TenantID          string
+	ConnectorID       string
+	InstanceID        string
+	DisplayName       string
+	Version           string
+	StartedAt         time.Time
+	ConfigFingerprint string
+	ConfigCategories  []string
+	KeyID             string
+	Secret            []byte
+	Directory         directory.Client
+	RequestTimeout    time.Duration
+	Concurrency       int
+	ReconnectMin      time.Duration
+	ReconnectMax      time.Duration
+	Logger            *slog.Logger
 }
 
 type Client struct {
@@ -60,17 +66,23 @@ type challengeMessage struct {
 }
 
 type authResponseMessage struct {
-	Type                string `json:"type"`
-	Protocol            string `json:"protocol"`
-	ProtocolVersion     int    `json:"protocol_version"`
-	MinSupportedVersion int    `json:"min_supported_version"`
-	TenantID            string `json:"tenant_id"`
-	ConnectorID         string `json:"connector_id"`
-	KeyID               string `json:"key_id"`
-	ChallengeID         string `json:"challenge_id"`
-	Nonce               string `json:"nonce"`
-	Timestamp           string `json:"timestamp"`
-	Signature           string `json:"signature"`
+	Type                string   `json:"type"`
+	Protocol            string   `json:"protocol"`
+	ProtocolVersion     int      `json:"protocol_version"`
+	MinSupportedVersion int      `json:"min_supported_version"`
+	TenantID            string   `json:"tenant_id"`
+	ConnectorID         string   `json:"connector_id"`
+	InstanceID          string   `json:"instance_id,omitempty"`
+	DisplayName         string   `json:"display_name,omitempty"`
+	Version             string   `json:"version,omitempty"`
+	StartedAt           string   `json:"started_at,omitempty"`
+	ConfigFingerprint   string   `json:"config_fingerprint,omitempty"`
+	ConfigCategories    []string `json:"config_categories,omitempty"`
+	KeyID               string   `json:"key_id"`
+	ChallengeID         string   `json:"challenge_id"`
+	Nonce               string   `json:"nonce"`
+	Timestamp           string   `json:"timestamp"`
+	Signature           string   `json:"signature"`
 }
 
 type envelope struct {
@@ -154,6 +166,9 @@ func NewClient(config Config) (*Client, error) {
 	if config.ConnectorID == "" {
 		return nil, errors.New("relay connector id is required")
 	}
+	if config.InstanceID == "" {
+		return nil, errors.New("relay instance id is required")
+	}
 	if err := validateRelayURLBinding(config.URL, config.TenantID, config.ConnectorID); err != nil {
 		return nil, err
 	}
@@ -180,6 +195,15 @@ func NewClient(config Config) (*Client, error) {
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
+	}
+	if config.Version == "" {
+		config.Version = "unknown"
+	}
+	if config.StartedAt.IsZero() {
+		config.StartedAt = time.Now().UTC()
+	}
+	if config.ConfigFingerprint == "" {
+		config.ConfigFingerprint = "sha256:" + strings.Repeat("0", 64)
 	}
 	return &Client{
 		config: config,
@@ -283,6 +307,12 @@ func (c *Client) authenticate(ctx context.Context, conn *websocket.Conn) error {
 		MinSupportedVersion: MinSupportedVersion,
 		TenantID:            c.config.TenantID,
 		ConnectorID:         c.config.ConnectorID,
+		InstanceID:          c.config.InstanceID,
+		DisplayName:         c.config.DisplayName,
+		Version:             c.config.Version,
+		StartedAt:           c.config.StartedAt.UTC().Format(time.RFC3339),
+		ConfigFingerprint:   c.config.ConfigFingerprint,
+		ConfigCategories:    append([]string(nil), c.config.ConfigCategories...),
 		KeyID:               c.config.KeyID,
 		ChallengeID:         challenge.ChallengeID,
 		Nonce:               challenge.Nonce,

@@ -28,6 +28,7 @@ type ServerConfig struct {
 	Listen           string          `yaml:"listen"`
 	PublicBaseURL    string          `yaml:"public_base_url"`
 	ExposeOperations bool            `yaml:"expose_operations"`
+	StateDir         string          `yaml:"state_dir"`
 	TLS              ServerTLSConfig `yaml:"tls"`
 }
 
@@ -47,9 +48,10 @@ type TenantConfig struct {
 }
 
 type AuthrimConfig struct {
-	HMACKeys           HMACKeysConfig `yaml:"hmac_keys"`
-	AuditHashSecretRef string         `yaml:"audit_hash_secret_ref"`
-	Relay              RelayConfig    `yaml:"relay"`
+	HMACKeys           HMACKeysConfig  `yaml:"hmac_keys"`
+	AuditHashSecretRef string          `yaml:"audit_hash_secret_ref"`
+	Relay              RelayConfig     `yaml:"relay"`
+	Heartbeat          HeartbeatConfig `yaml:"heartbeat"`
 }
 
 type RelayConfig struct {
@@ -57,6 +59,17 @@ type RelayConfig struct {
 	URL            string `yaml:"url"`
 	ReconnectMinMS int    `yaml:"reconnect_min_ms"`
 	ReconnectMaxMS int    `yaml:"reconnect_max_ms"`
+}
+
+type HeartbeatConfig struct {
+	Enabled     bool           `yaml:"enabled"`
+	URL         string         `yaml:"url"`
+	Transport   string         `yaml:"transport"`
+	DisplayName string         `yaml:"display_name"`
+	Key         HMACKeyConfig  `yaml:"key"`
+	Previous    *HMACKeyConfig `yaml:"previous"`
+	IntervalMS  int            `yaml:"interval_ms"`
+	TimeoutMS   int            `yaml:"timeout_ms"`
 }
 
 type HMACKeysConfig struct {
@@ -194,6 +207,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = "127.0.0.1:8080"
 	}
+	if cfg.Server.StateDir == "" {
+		cfg.Server.StateDir = ".authrim-wordwarden"
+	}
 	for i := range cfg.Tenants {
 		applyDirectoryProfileDefaults(&cfg.Tenants[i].LDAP)
 		if cfg.Tenants[i].LDAP.LookupMode == "" {
@@ -261,6 +277,15 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Tenants[i].Authrim.Relay.ReconnectMaxMS == 0 {
 			cfg.Tenants[i].Authrim.Relay.ReconnectMaxMS = 30000
+		}
+		if cfg.Tenants[i].Authrim.Heartbeat.Transport == "" {
+			cfg.Tenants[i].Authrim.Heartbeat.Transport = "direct"
+		}
+		if cfg.Tenants[i].Authrim.Heartbeat.IntervalMS == 0 {
+			cfg.Tenants[i].Authrim.Heartbeat.IntervalMS = 300000
+		}
+		if cfg.Tenants[i].Authrim.Heartbeat.TimeoutMS == 0 {
+			cfg.Tenants[i].Authrim.Heartbeat.TimeoutMS = 5000
 		}
 		if cfg.Tenants[i].Protection.MaxConcurrentRequests == 0 {
 			cfg.Tenants[i].Protection.MaxConcurrentRequests = 8
@@ -358,6 +383,8 @@ func Validate(cfg *Config) error {
 		}
 		if tenant.ConnectorID == "" {
 			problems = append(problems, prefix+".connector_id is required")
+		} else if !connectorIDPattern.MatchString(tenant.ConnectorID) {
+			problems = append(problems, prefix+".connector_id must be wwcon_ followed by 16 alphanumeric characters")
 		}
 		if _, ok := seenTenants[tenant.TenantID]; tenant.TenantID != "" && ok {
 			problems = append(problems, prefix+".tenant_id must be unique")
@@ -380,6 +407,7 @@ func Validate(cfg *Config) error {
 		}
 		validateSecretRef(&problems, prefix+".authrim.audit_hash_secret_ref", tenant.Authrim.AuditHashSecretRef)
 		validateRelay(&problems, prefix+".authrim.relay", tenant.Authrim.Relay, tenant.TenantID, tenant.ConnectorID)
+		validateHeartbeat(&problems, prefix+".authrim.heartbeat", tenant.Authrim.Heartbeat, tenant.TenantID, tenant.ConnectorID)
 		validateLDAP(&problems, prefix+".ldap", tenant.LDAP)
 		validateTimeouts(&problems, prefix+".timeouts", tenant.Timeouts)
 		if tenant.Protection.MaxConcurrentRequests <= 0 {
@@ -409,6 +437,72 @@ func validateProtection(problems *[]string, prefix string, protection Protection
 	}
 	if protection.DirectoryErrorLimit <= 0 {
 		*problems = append(*problems, prefix+".directory_error_limit must be positive")
+	}
+}
+
+func validateHeartbeat(problems *[]string, prefix string, heartbeat HeartbeatConfig, tenantID string, connectorID string) {
+	switch heartbeat.Transport {
+	case "direct", "tunnel", "relay":
+	default:
+		*problems = append(*problems, prefix+".transport must be direct, tunnel, or relay")
+	}
+	if !heartbeat.Enabled {
+		return
+	}
+	if heartbeat.URL == "" {
+		*problems = append(*problems, prefix+".url is required when heartbeat is enabled")
+	} else {
+		validateHeartbeatURL(problems, prefix+".url", heartbeat.URL, tenantID, connectorID)
+	}
+	if heartbeat.Key.KID == "" {
+		*problems = append(*problems, prefix+".key.kid is required when heartbeat is enabled")
+	}
+	validateSecretRef(problems, prefix+".key.secret_ref", heartbeat.Key.SecretRef)
+	if heartbeat.Previous != nil {
+		if heartbeat.Previous.KID == "" {
+			*problems = append(*problems, prefix+".previous.kid is required")
+		}
+		validateSecretRef(problems, prefix+".previous.secret_ref", heartbeat.Previous.SecretRef)
+	}
+	if heartbeat.IntervalMS < 30000 || heartbeat.IntervalMS > 86400000 {
+		*problems = append(*problems, prefix+".interval_ms must be between 30000 and 86400000")
+	}
+	if heartbeat.TimeoutMS < 100 || heartbeat.TimeoutMS > 30000 {
+		*problems = append(*problems, prefix+".timeout_ms must be between 100 and 30000")
+	}
+}
+
+func validateHeartbeatURL(problems *[]string, field string, raw string, tenantID string, connectorID string) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		*problems = append(*problems, field+" must be a valid URL")
+		return
+	}
+	switch parsed.Scheme {
+	case "https":
+	case "http":
+		if parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1" {
+			*problems = append(*problems, field+" must use https:// except http://localhost for local development")
+		}
+	default:
+		*problems = append(*problems, field+" must use https:// except http://localhost for local development")
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(parts) < 6 || strings.Join(parts[len(parts)-6:len(parts)-2], "/") != "api/auth/directory-connectors/heartbeat" {
+		*problems = append(*problems, field+" must include /api/auth/directory-connectors/heartbeat/{tenant_id}/{connector_id}")
+		return
+	}
+	rawTenantID, tenantErr := url.PathUnescape(parts[len(parts)-2])
+	rawConnectorID, connectorErr := url.PathUnescape(parts[len(parts)-1])
+	if tenantErr != nil {
+		*problems = append(*problems, field+" tenant_id path segment is invalid")
+	} else if rawTenantID != tenantID {
+		*problems = append(*problems, field+" tenant_id must match tenant_id")
+	}
+	if connectorErr != nil {
+		*problems = append(*problems, field+" connector_id path segment is invalid")
+	} else if rawConnectorID != connectorID {
+		*problems = append(*problems, field+" connector_id must match connector_id")
 	}
 }
 
@@ -701,6 +795,8 @@ func validateGroups(problems *[]string, prefix string, groups GroupConfig) {
 		*problems = append(*problems, prefix+".timeout_ms must be 60000 or less")
 	}
 }
+
+var connectorIDPattern = regexp.MustCompile(`^wwcon_[A-Za-z0-9]{16}$`)
 
 var ldapAttributeDescriptionPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*(;[A-Za-z0-9-]+)*$`)
 

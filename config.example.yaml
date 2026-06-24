@@ -4,6 +4,8 @@ deployment:
 server:
   listen: "127.0.0.1:8080"
   public_base_url: "https://wordwarden.example.com"
+  # Stores the generated immutable instance_id used by Authrim Connector Fleet.
+  state_dir: "/var/lib/authrim-wordwarden"
   # Exposes /healthz/details and /metrics to non-loopback clients.
   expose_operations: false
   tls:
@@ -13,7 +15,7 @@ server:
 
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:
@@ -28,6 +30,17 @@ tenants:
         url: ""
         reconnect_min_ms: 1000
         reconnect_max_ms: 30000
+      heartbeat:
+        enabled: false
+        url: "https://login.example.com/api/auth/directory-connectors/heartbeat/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"
+        transport: "direct"
+        display_name: "campus-wordwarden-a"
+        key:
+          kid: ""
+          secret_ref: ""
+        previous: null
+        interval_ms: 300000
+        timeout_ms: 5000
     ldap:
       url: "ldaps://ldap.example.com:636"
       tls:

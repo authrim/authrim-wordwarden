@@ -55,7 +55,7 @@ Request body:
 {
   "request_id": "req_123",
   "tenant_id": "tenant-a",
-  "connector_id": "ww_tenant_a",
+  "connector_id": "wwcon_8K4M2Q9F7D3H6P1X",
   "username": "alice",
   "password": "correct horse battery staple",
   "attribute_names": ["uid", "mail", "displayName"]
@@ -72,7 +72,7 @@ Success response:
 {
   "request_id": "req_123",
   "tenant_id": "tenant-a",
-  "connector_id": "ww_tenant_a",
+  "connector_id": "wwcon_8K4M2Q9F7D3H6P1X",
   "result": "success",
   "subject": {
     "directory_id": "uid=alice,ou=People,dc=example,dc=com",
@@ -105,7 +105,7 @@ Invalid credentials response:
 {
   "request_id": "req_123",
   "tenant_id": "tenant-a",
-  "connector_id": "ww_tenant_a",
+  "connector_id": "wwcon_8K4M2Q9F7D3H6P1X",
   "result": "failure",
   "reason": "invalid_credentials",
   "directory_status": "ok"
@@ -119,7 +119,7 @@ directory safely exposes that state:
 {
   "request_id": "req_123",
   "tenant_id": "tenant-a",
-  "connector_id": "ww_tenant_a",
+  "connector_id": "wwcon_8K4M2Q9F7D3H6P1X",
   "result": "failure",
   "reason": "account_locked",
   "directory_status": "ok"
@@ -132,7 +132,7 @@ Policy-required response:
 {
   "request_id": "req_123",
   "tenant_id": "tenant-a",
-  "connector_id": "ww_tenant_a",
+  "connector_id": "wwcon_8K4M2Q9F7D3H6P1X",
   "result": "policy_required",
   "reason": "must_change_password",
   "directory_status": "ok"

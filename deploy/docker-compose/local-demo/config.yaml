@@ -11,7 +11,7 @@ server:
 
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:

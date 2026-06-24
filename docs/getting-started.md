@@ -219,7 +219,7 @@ authentication-methods.directory_password.connector_id=campus
 directory-connectors.campus.transport=direct
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.auth_mode=hmac
-directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.connector_id=wwcon_8K4M2Q9F7D3H6P1X
 directory-connectors.campus.key_id=kid-active
 directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
 directory-connectors.campus.timeouts.request_ms=3000
@@ -235,7 +235,7 @@ For outbound relay, Authrim does not need a Wordwarden public endpoint:
 ```text
 directory-connectors.campus.transport=relay
 directory-connectors.campus.auth_mode=hmac
-directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.connector_id=wwcon_8K4M2Q9F7D3H6P1X
 directory-connectors.campus.key_id=kid-active
 directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
 ```
@@ -246,7 +246,7 @@ Then set the matching Wordwarden relay URL:
 authrim:
   relay:
     enabled: true
-    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"
+    url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"
 ```
 
 In direct mode, `server.public_base_url` is the public Wordwarden URL, not the

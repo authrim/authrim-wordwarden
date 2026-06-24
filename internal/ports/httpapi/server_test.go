@@ -81,7 +81,7 @@ func TestHealthDetailsDoesNotExposeSecretsOrDirectoryReachability(t *testing.T) 
 	if len(body.Tenants) != 1 {
 		t.Fatalf("Tenants len = %d", len(body.Tenants))
 	}
-	if body.Tenants[0].ConnectorID != "ww_tenant_a" {
+	if body.Tenants[0].ConnectorID != "wwcon_8K4M2Q9F7D3H6P1X" {
 		t.Fatalf("ConnectorID = %q", body.Tenants[0].ConnectorID)
 	}
 	if strings.Contains(rec.Body.String(), "active-secret") || strings.Contains(rec.Body.String(), "audit-secret") {
@@ -114,7 +114,7 @@ func TestMetricsEndpointCountsVerifyEventsWithoutUserIdentifiers(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"wrong",
 		"attribute_names":["uid"]
@@ -145,7 +145,7 @@ func TestVerifyPasswordSuccess(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct",
 		"attribute_names":["uid","mail"]
@@ -180,7 +180,7 @@ func TestVerifyPasswordInvalidCredentials(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"wrong",
 		"attribute_names":["uid"]
@@ -206,7 +206,7 @@ func TestVerifyPasswordPolicyRequired(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"must-change",
 		"attribute_names":["uid"]
@@ -235,7 +235,7 @@ func TestVerifyPasswordSourceUnavailable(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"source-down",
 		"attribute_names":["uid"]
@@ -261,7 +261,7 @@ func TestVerifyPasswordRejectsBadSignature(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`, "nonce_123", []byte("wrong-secret"))
@@ -278,7 +278,7 @@ func TestVerifyPasswordRejectsUnknownJSONField(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct",
 		"unexpected":true
@@ -286,7 +286,7 @@ func TestVerifyPasswordRejectsUnknownJSONField(t *testing.T) {
 	directory := &countingDirectory{}
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:        "tenant-a",
-		ConnectorID:     "ww_tenant_a",
+		ConnectorID:     "wwcon_8K4M2Q9F7D3H6P1X",
 		HMACVerifier:    testVerifier(),
 		Directory:       directory,
 		AuditHashSecret: []byte("audit-secret"),
@@ -308,14 +308,14 @@ func TestVerifyPasswordRejectsEmptyPasswordBeforeDirectory(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":""
 	}`, "nonce_123", []byte("active-secret"))
 	directory := &countingDirectory{}
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:        "tenant-a",
-		ConnectorID:     "ww_tenant_a",
+		ConnectorID:     "wwcon_8K4M2Q9F7D3H6P1X",
 		HMACVerifier:    testVerifier(),
 		Directory:       directory,
 		AuditHashSecret: []byte("audit-secret"),
@@ -334,7 +334,7 @@ func TestVerifyPasswordRejectsEmptyPasswordBeforeDirectory(t *testing.T) {
 }
 
 func TestVerifyPasswordRejectsOversizedBody(t *testing.T) {
-	body := `{"request_id":"req_123","tenant_id":"tenant-a","connector_id":"ww_tenant_a","username":"alice","password":"` +
+	body := `{"request_id":"req_123","tenant_id":"tenant-a","connector_id":"wwcon_8K4M2Q9F7D3H6P1X","username":"alice","password":"` +
 		strings.Repeat("a", maxVerifyPasswordBodyBytes) + `"}`
 	req := signedVerifyPasswordRequest(t, body, "nonce_123", []byte("active-secret"))
 
@@ -351,7 +351,7 @@ func TestVerifyPasswordUsesConfiguredRequestTimeout(t *testing.T) {
 	deadline := make(chan time.Time, 1)
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:         "tenant-a",
-		ConnectorID:      "ww_tenant_a",
+		ConnectorID:      "wwcon_8K4M2Q9F7D3H6P1X",
 		HMACVerifier:     testVerifier(),
 		Directory:        deadlineDirectory{deadline: deadline},
 		AuditHashSecret:  []byte("audit-secret"),
@@ -360,7 +360,7 @@ func TestVerifyPasswordUsesConfiguredRequestTimeout(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`, "nonce_123", []byte("active-secret"))
@@ -386,7 +386,7 @@ func TestVerifyPasswordRejectsReplay(t *testing.T) {
 	body := `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
@@ -409,16 +409,16 @@ func TestVerifyPasswordRejectsReplay(t *testing.T) {
 func TestVerifyPasswordScopesReplayByConnectorAndKey(t *testing.T) {
 	handler := NewHandler("test-version", HandlerOptions{
 		Tenants: map[string]TenantRuntime{
-			"ww_tenant_a": {
+			"wwcon_8K4M2Q9F7D3H6P1X": {
 				TenantID:        "tenant-a",
-				ConnectorID:     "ww_tenant_a",
+				ConnectorID:     "wwcon_8K4M2Q9F7D3H6P1X",
 				HMACVerifier:    testVerifier(),
 				Directory:       fakeDirectory{},
 				AuditHashSecret: []byte("audit-secret-a"),
 			},
-			"ww_tenant_b": {
+			"wwcon_4R7T9K2M6Q1F3D8H": {
 				TenantID:        "tenant-b",
-				ConnectorID:     "ww_tenant_b",
+				ConnectorID:     "wwcon_4R7T9K2M6Q1F3D8H",
 				HMACVerifier:    testVerifier(),
 				Directory:       fakeDirectory{},
 				AuditHashSecret: []byte("audit-secret-b"),
@@ -430,11 +430,11 @@ func TestVerifyPasswordScopesReplayByConnectorAndKey(t *testing.T) {
 	bodyA := `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
-	reqA := signedVerifyPasswordRequestForConnector(t, bodyA, "req_123", "nonce_123", "ww_tenant_a", []byte("active-secret"))
+	reqA := signedVerifyPasswordRequestForConnector(t, bodyA, "req_123", "nonce_123", "wwcon_8K4M2Q9F7D3H6P1X", []byte("active-secret"))
 	recA := httptest.NewRecorder()
 	handler.ServeHTTP(recA, reqA)
 	if recA.Code != http.StatusOK {
@@ -444,11 +444,11 @@ func TestVerifyPasswordScopesReplayByConnectorAndKey(t *testing.T) {
 	bodyB := `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-b",
-		"connector_id":"ww_tenant_b",
+		"connector_id":"wwcon_4R7T9K2M6Q1F3D8H",
 		"username":"alice",
 		"password":"correct"
 	}`
-	reqB := signedVerifyPasswordRequestForConnector(t, bodyB, "req_123", "nonce_123", "ww_tenant_b", []byte("active-secret"))
+	reqB := signedVerifyPasswordRequestForConnector(t, bodyB, "req_123", "nonce_123", "wwcon_4R7T9K2M6Q1F3D8H", []byte("active-secret"))
 	recB := httptest.NewRecorder()
 	handler.ServeHTTP(recB, reqB)
 	if recB.Code != http.StatusOK {
@@ -462,7 +462,7 @@ func TestVerifyPasswordWritesRedactedAuditEvent(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`, "nonce_123", []byte("active-secret"))
@@ -508,7 +508,7 @@ func BenchmarkVerifyPasswordSuccess(b *testing.B) {
 		body := fmt.Sprintf(`{
 			"request_id":%q,
 			"tenant_id":"tenant-a",
-			"connector_id":"ww_tenant_a",
+			"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 			"username":"alice",
 			"password":"correct",
 			"attribute_names":["uid","mail"]
@@ -533,7 +533,7 @@ func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
 	release := make(chan struct{})
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:         "tenant-a",
-		ConnectorID:      "ww_tenant_a",
+		ConnectorID:      "wwcon_8K4M2Q9F7D3H6P1X",
 		HMACVerifier:     testVerifier(),
 		Directory:        blockingDirectory{started: started, release: release},
 		AuditHashSecret:  []byte("audit-secret"),
@@ -547,7 +547,7 @@ func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
 		req := signedVerifyPasswordRequest(t, `{
 			"request_id":"req_123",
 			"tenant_id":"tenant-a",
-			"connector_id":"ww_tenant_a",
+			"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 			"username":"alice",
 			"password":"correct"
 		}`, "nonce_123", []byte("active-secret"))
@@ -563,7 +563,7 @@ func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
 	body := `{
 		"request_id":"req_456",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
@@ -583,7 +583,7 @@ func TestVerifyPasswordEnforcesConnectorConcurrencyLimit(t *testing.T) {
 func TestVerifyPasswordDoesNotConnectorBlockAfterHMACFailures(t *testing.T) {
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:        "tenant-a",
-		ConnectorID:     "ww_tenant_a",
+		ConnectorID:     "wwcon_8K4M2Q9F7D3H6P1X",
 		HMACVerifier:    testVerifier(),
 		Directory:       fakeDirectory{},
 		AuditHashSecret: []byte("audit-secret"),
@@ -596,7 +596,7 @@ func TestVerifyPasswordDoesNotConnectorBlockAfterHMACFailures(t *testing.T) {
 	badReq := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`, "nonce_123", []byte("wrong-secret"))
@@ -609,7 +609,7 @@ func TestVerifyPasswordDoesNotConnectorBlockAfterHMACFailures(t *testing.T) {
 	goodBody := `{
 		"request_id":"req_456",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
@@ -624,7 +624,7 @@ func TestVerifyPasswordDoesNotConnectorBlockAfterHMACFailures(t *testing.T) {
 func TestVerifyPasswordLimitsDirectoryErrorStorm(t *testing.T) {
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:        "tenant-a",
-		ConnectorID:     "ww_tenant_a",
+		ConnectorID:     "wwcon_8K4M2Q9F7D3H6P1X",
 		HMACVerifier:    testVerifier(),
 		Directory:       errorDirectory{err: directory.ErrDirectoryUnavailable},
 		AuditHashSecret: []byte("audit-secret"),
@@ -638,7 +638,7 @@ func TestVerifyPasswordLimitsDirectoryErrorStorm(t *testing.T) {
 	firstBody := `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
@@ -652,7 +652,7 @@ func TestVerifyPasswordLimitsDirectoryErrorStorm(t *testing.T) {
 	secondBody := `{
 		"request_id":"req_456",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
@@ -675,7 +675,7 @@ func TestVerifyPasswordLimitsDirectoryErrorStorm(t *testing.T) {
 func TestVerifyPasswordLimitsSourceUnavailableStorm(t *testing.T) {
 	handler := newTestHandlerWithRuntime(TenantRuntime{
 		TenantID:        "tenant-a",
-		ConnectorID:     "ww_tenant_a",
+		ConnectorID:     "wwcon_8K4M2Q9F7D3H6P1X",
 		HMACVerifier:    testVerifier(),
 		Directory:       sourceUnavailableDirectory{},
 		AuditHashSecret: []byte("audit-secret"),
@@ -689,7 +689,7 @@ func TestVerifyPasswordLimitsSourceUnavailableStorm(t *testing.T) {
 	firstBody := `{
 		"request_id":"req_123",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
@@ -703,7 +703,7 @@ func TestVerifyPasswordLimitsSourceUnavailableStorm(t *testing.T) {
 	secondBody := `{
 		"request_id":"req_456",
 		"tenant_id":"tenant-a",
-		"connector_id":"ww_tenant_a",
+		"connector_id":"wwcon_8K4M2Q9F7D3H6P1X",
 		"username":"alice",
 		"password":"correct"
 	}`
@@ -742,9 +742,9 @@ func newTestHandler() http.Handler {
 func newTestHandlerWithAudit(sink audit.Sink) http.Handler {
 	return NewHandler("test-version", HandlerOptions{
 		Tenants: map[string]TenantRuntime{
-			"ww_tenant_a": {
+			"wwcon_8K4M2Q9F7D3H6P1X": {
 				TenantID:        "tenant-a",
-				ConnectorID:     "ww_tenant_a",
+				ConnectorID:     "wwcon_8K4M2Q9F7D3H6P1X",
 				HMACVerifier:    testVerifier(),
 				Directory:       fakeDirectory{},
 				AuditHashSecret: []byte("audit-secret"),
@@ -757,7 +757,7 @@ func newTestHandlerWithAudit(sink audit.Sink) http.Handler {
 
 func newTestHandlerWithRuntime(runtime TenantRuntime) http.Handler {
 	return NewHandler("test-version", HandlerOptions{
-		Tenants:          map[string]TenantRuntime{"ww_tenant_a": runtime},
+		Tenants:          map[string]TenantRuntime{"wwcon_8K4M2Q9F7D3H6P1X": runtime},
 		Audit:            audit.DiscardSink{},
 		ExposeOperations: true,
 	})
@@ -781,7 +781,7 @@ func signedVerifyPasswordRequest(t testHelper, body string, nonce string, secret
 }
 
 func signedVerifyPasswordRequestWithID(t testHelper, body string, requestID string, nonce string, secret []byte) *http.Request {
-	return signedVerifyPasswordRequestForConnector(t, body, requestID, nonce, "ww_tenant_a", secret)
+	return signedVerifyPasswordRequestForConnector(t, body, requestID, nonce, "wwcon_8K4M2Q9F7D3H6P1X", secret)
 }
 
 func signedVerifyPasswordRequestForConnector(t testHelper, body string, requestID string, nonce string, connectorID string, secret []byte) *http.Request {

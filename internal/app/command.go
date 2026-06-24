@@ -67,9 +67,17 @@ func newServeCommand(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			instanceID, err := loadOrCreateInstanceID(cfg.Server.StateDir)
+			if err != nil {
+				return err
+			}
+			startedAt := time.Now().UTC()
 			serveCtx, cancelServe := context.WithCancel(cmd.Context())
 			defer cancelServe()
-			if err := startRelayClients(serveCtx, cfg, runtimes, cmd.ErrOrStderr()); err != nil {
+			if err := startRelayClients(serveCtx, cfg, runtimes, instanceID, startedAt, cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+			if err := startHeartbeatClients(serveCtx, cfg, instanceID, startedAt, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 
@@ -437,6 +445,8 @@ func startRelayClients(
 	ctx context.Context,
 	cfg *config.Config,
 	runtimes map[string]httpapi.TenantRuntime,
+	instanceID string,
+	startedAt time.Time,
 	logWriter io.Writer,
 ) error {
 	resolver := secretsadapter.NewResolver()
@@ -455,17 +465,23 @@ func startRelayClients(
 			return fmt.Errorf("tenant %s relay HMAC secret: %w", tenant.TenantID, err)
 		}
 		client, err := relayadapter.NewClient(relayadapter.Config{
-			URL:            tenant.Authrim.Relay.URL,
-			TenantID:       tenant.TenantID,
-			ConnectorID:    tenant.ConnectorID,
-			KeyID:          tenant.Authrim.HMACKeys.Active.KID,
-			Secret:         activeSecret,
-			Directory:      runtime.Directory,
-			RequestTimeout: time.Duration(runtime.RequestTimeoutMS) * time.Millisecond,
-			Concurrency:    runtime.ConcurrencyLimit,
-			ReconnectMin:   time.Duration(tenant.Authrim.Relay.ReconnectMinMS) * time.Millisecond,
-			ReconnectMax:   time.Duration(tenant.Authrim.Relay.ReconnectMaxMS) * time.Millisecond,
-			Logger:         logger,
+			URL:               tenant.Authrim.Relay.URL,
+			TenantID:          tenant.TenantID,
+			ConnectorID:       tenant.ConnectorID,
+			InstanceID:        instanceID,
+			DisplayName:       tenant.Authrim.Heartbeat.DisplayName,
+			Version:           version,
+			StartedAt:         startedAt,
+			ConfigFingerprint: configFingerprint(tenant),
+			ConfigCategories:  []string{"tenant", "connector", "ldap", "profile", "protection", "relay", "heartbeat"},
+			KeyID:             tenant.Authrim.HMACKeys.Active.KID,
+			Secret:            activeSecret,
+			Directory:         runtime.Directory,
+			RequestTimeout:    time.Duration(runtime.RequestTimeoutMS) * time.Millisecond,
+			Concurrency:       runtime.ConcurrencyLimit,
+			ReconnectMin:      time.Duration(tenant.Authrim.Relay.ReconnectMinMS) * time.Millisecond,
+			ReconnectMax:      time.Duration(tenant.Authrim.Relay.ReconnectMaxMS) * time.Millisecond,
+			Logger:            logger,
 		})
 		if err != nil {
 			return fmt.Errorf("tenant %s relay client: %w", tenant.TenantID, err)

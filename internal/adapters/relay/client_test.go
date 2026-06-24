@@ -7,7 +7,7 @@ import (
 func TestAuthCanonicalAndSignature(t *testing.T) {
 	canonical := AuthCanonical(AuthCanonicalInput{
 		TenantID:            "tenant-a",
-		ConnectorID:         "ww_tenant_a",
+		ConnectorID:         "wwcon_8K4M2Q9F7D3H6P1X",
 		KeyID:               "kid-active",
 		ProtocolVersion:     ProtocolVersion,
 		MinSupportedVersion: MinSupportedVersion,
@@ -18,7 +18,7 @@ func TestAuthCanonicalAndSignature(t *testing.T) {
 
 	want := "AUTHRIM-WORDWARDEN-RELAY-HMAC-SHA256\n" +
 		"tenant-a\n" +
-		"ww_tenant_a\n" +
+		"wwcon_8K4M2Q9F7D3H6P1X\n" +
 		"kid-active\n" +
 		"1\n" +
 		"1\n" +
@@ -65,24 +65,24 @@ func TestRelayProtocolCompatibility(t *testing.T) {
 
 func TestValidateRelayURLBinding(t *testing.T) {
 	err := validateRelayURLBinding(
-		"wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a",
+		"wss://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_8K4M2Q9F7D3H6P1X",
 		"tenant-a",
-		"ww_tenant_a",
+		"wwcon_8K4M2Q9F7D3H6P1X",
 	)
 	if err != nil {
 		t.Fatalf("validateRelayURLBinding() error = %v", err)
 	}
 	if err := validateRelayURLBinding(
-		"wss://login.example.com/api/auth/directory-relay/connect/tenant-b/ww_tenant_a",
+		"wss://login.example.com/api/auth/directory-relay/connect/tenant-b/wwcon_8K4M2Q9F7D3H6P1X",
 		"tenant-a",
-		"ww_tenant_a",
+		"wwcon_8K4M2Q9F7D3H6P1X",
 	); err == nil {
 		t.Fatal("validateRelayURLBinding(tenant mismatch) error = nil, want error")
 	}
 	if err := validateRelayURLBinding(
 		"wss://login.example.com/api/auth/directory-relay/connect/tenant-a/other",
 		"tenant-a",
-		"ww_tenant_a",
+		"wwcon_8K4M2Q9F7D3H6P1X",
 	); err == nil {
 		t.Fatal("validateRelayURLBinding(connector mismatch) error = nil, want error")
 	}

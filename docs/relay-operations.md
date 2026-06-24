@@ -36,7 +36,7 @@ Configure the active HMAC key with the Authrim-generated secret:
 ```yaml
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:
@@ -45,7 +45,7 @@ tenants:
       audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
       relay:
         enabled: true
-        url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"
+        url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"
 ```
 
 Wordwarden validates that the relay URL path tenant and connector match the
@@ -71,12 +71,20 @@ protect them with network allowlisting.
 Then check Authrim Admin UI:
 
 - Directory Authentication -> connector -> Health Check
+- Directory Authentication -> Connector Fleet
 - authenticated connections
 - pending requests and max pending requests
 - last authenticated / verify / disconnect timestamps
 - disconnect reason
 - relay protocol and version
 - authenticated key id
+
+Relay authentication sends Wordwarden `instance_id`, version, started time, and
+config fingerprint metadata to Authrim Connector Fleet. The `instance_id` is
+generated on first startup and stored under `server.state_dir`; keep that
+directory persistent across restarts. If an instance is deactivated in Authrim,
+that instance's relay registration is rejected without affecting other
+instances for the same connector.
 
 ## Troubleshooting
 

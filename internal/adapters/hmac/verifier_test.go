@@ -120,7 +120,7 @@ func signedRequest(t *testing.T, kid string, secret []byte, now time.Time) *http
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(HeaderConnectorID, "ww_tenant_a")
+	req.Header.Set(HeaderConnectorID, "wwcon_8K4M2Q9F7D3H6P1X")
 	req.Header.Set(HeaderKeyID, kid)
 	req.Header.Set(HeaderRequestID, "req_123")
 	req.Header.Set(HeaderTimestamp, now.Format(time.RFC3339))

@@ -70,7 +70,7 @@ group.
 ```text
 directory-connectors.campus.endpoint_url=https://wordwarden.example.edu
 directory-connectors.campus.auth_mode=hmac
-directory-connectors.campus.connector_id=ww_tenant_a
+directory-connectors.campus.connector_id=wwcon_8K4M2Q9F7D3H6P1X
 directory-connectors.campus.key_id=kid-active
 directory-connectors.campus.secret_ref=env:WORDWARDEN_SECRET
 directory-connectors.campus.timeouts.request_ms=3000

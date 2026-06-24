@@ -13,7 +13,7 @@ server:
   public_base_url: "https://wordwarden.example.com"
 tenants:
   - tenant_id: "tenant-a"
-    connector_id: "ww_tenant_a"
+    connector_id: "wwcon_8K4M2Q9F7D3H6P1X"
     authrim:
       hmac_keys:
         active:
@@ -55,6 +55,24 @@ func TestParseValidConfig(t *testing.T) {
 	}
 	if cfg.Tenants[0].LDAP.DirectoryProfile.Name != "generic" {
 		t.Fatalf("default directory profile = %q", cfg.Tenants[0].LDAP.DirectoryProfile.Name)
+	}
+	if cfg.Server.StateDir != ".authrim-wordwarden" {
+		t.Fatalf("default state dir = %q", cfg.Server.StateDir)
+	}
+	if cfg.Tenants[0].Authrim.Heartbeat.IntervalMS != 300000 {
+		t.Fatalf("default heartbeat interval = %d", cfg.Tenants[0].Authrim.Heartbeat.IntervalMS)
+	}
+}
+
+func TestParseRejectsMutableConnectorIDFormat(t *testing.T) {
+	raw := strings.Replace(validConfig, `connector_id: "wwcon_8K4M2Q9F7D3H6P1X"`, `connector_id: "campus"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want connector id format error")
+	}
+	if !strings.Contains(err.Error(), "connector_id must be wwcon_ followed by 16 alphanumeric characters") {
+		t.Fatalf("Parse() error = %v", err)
 	}
 }
 
@@ -349,7 +367,7 @@ func TestParseAllowsRelayConfig(t *testing.T) {
 	raw := strings.Replace(validConfig, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"`, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
       relay:
         enabled: true
-        url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"`, 1)
+        url: "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"`, 1)
 
 	cfg, err := Parse([]byte(raw))
 	if err != nil {
@@ -367,7 +385,7 @@ func TestParseRejectsRelayHTTPURL(t *testing.T) {
 	raw := strings.Replace(validConfig, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"`, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
       relay:
         enabled: true
-        url: "http://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_a"`, 1)
+        url: "http://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"`, 1)
 
 	_, err := Parse([]byte(raw))
 	if err == nil {
@@ -386,12 +404,12 @@ func TestParseRejectsRelayURLTenantOrConnectorMismatch(t *testing.T) {
 	}{
 		{
 			name: "tenant",
-			url:  "wss://login.example.com/api/auth/directory-relay/connect/tenant-b/ww_tenant_a",
+			url:  "wss://login.example.com/api/auth/directory-relay/connect/tenant-b/wwcon_8K4M2Q9F7D3H6P1X",
 			want: "url tenant_id must match tenant_id",
 		},
 		{
 			name: "connector",
-			url:  "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/ww_tenant_b",
+			url:  "wss://login.example.com/api/auth/directory-relay/connect/tenant-a/wwcon_4R7T9K2M6Q1F3D8H",
 			want: "url connector_id must match connector_id",
 		},
 	}
@@ -408,6 +426,78 @@ func TestParseRejectsRelayURLTenantOrConnectorMismatch(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Parse() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestParseAllowsHeartbeatConfig(t *testing.T) {
+	raw := strings.Replace(validConfig, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"`, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+      heartbeat:
+        enabled: true
+        url: "https://login.example.com/api/auth/directory-connectors/heartbeat/tenant-a/wwcon_8K4M2Q9F7D3H6P1X"
+        transport: "tunnel"
+        display_name: "campus connector a"
+        key:
+          kid: "hb_2026_06"
+          secret_ref: "env:AUTHRIM_WORDWARDEN_HEARTBEAT_SECRET"
+        previous:
+          kid: "hb_2026_05"
+          secret_ref: "env:AUTHRIM_WORDWARDEN_HEARTBEAT_SECRET_PREVIOUS"
+        interval_ms: 60000
+        timeout_ms: 3000`, 1)
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	heartbeat := cfg.Tenants[0].Authrim.Heartbeat
+	if !heartbeat.Enabled || heartbeat.Transport != "tunnel" || heartbeat.Key.KID != "hb_2026_06" {
+		t.Fatalf("Heartbeat = %#v", heartbeat)
+	}
+	if heartbeat.Previous == nil || heartbeat.Previous.KID != "hb_2026_05" {
+		t.Fatalf("Heartbeat.Previous = %#v", heartbeat.Previous)
+	}
+}
+
+func TestParseRejectsHeartbeatURLBindingMismatch(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "tenant",
+			url:  "https://login.example.com/api/auth/directory-connectors/heartbeat/tenant-b/wwcon_8K4M2Q9F7D3H6P1X",
+			want: "authrim.heartbeat.url tenant_id must match tenant_id",
+		},
+		{
+			name: "connector",
+			url:  "https://login.example.com/api/auth/directory-connectors/heartbeat/tenant-a/wwcon_4R7T9K2M6Q1F3D8H",
+			want: "authrim.heartbeat.url connector_id must match connector_id",
+		},
+		{
+			name: "scheme",
+			url:  "http://login.example.com/api/auth/directory-connectors/heartbeat/tenant-a/wwcon_8K4M2Q9F7D3H6P1X",
+			want: "authrim.heartbeat.url must use https://",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := strings.Replace(validConfig, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"`, `audit_hash_secret_ref: "env:AUTHRIM_WORDWARDEN_AUDIT_HASH_SECRET"
+      heartbeat:
+        enabled: true
+        url: "`+tc.url+`"
+        key:
+          kid: "hb_2026_06"
+          secret_ref: "env:AUTHRIM_WORDWARDEN_HEARTBEAT_SECRET"`, 1)
+
+			_, err := Parse([]byte(raw))
+			if err == nil {
+				t.Fatal("Parse() error = nil, want heartbeat URL validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Parse() error = %v, want %q", err, tc.want)
 			}
 		})
 	}
@@ -436,7 +526,7 @@ func TestParseRejectsSingleTenantWithMultipleTenants(t *testing.T) {
   - tenant_id: "tenant-a"`, 1)
 	multi += `
   - tenant_id: "tenant-b"
-    connector_id: "ww_tenant_b"
+    connector_id: "wwcon_4R7T9K2M6Q1F3D8H"
     authrim:
       hmac_keys:
         active:
