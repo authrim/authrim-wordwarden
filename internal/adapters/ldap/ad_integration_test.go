@@ -16,7 +16,7 @@ func TestSambaADIntegration(t *testing.T) {
 	}
 
 	cfg := config.LDAPConfig{
-		URL: envOr("WORDWARDEN_SAMBA_AD_URL", "ldap://localhost:1389"),
+		URL: envOr("WORDWARDEN_SAMBA_AD_URL", "ldap://localhost:1390"),
 		TLS: config.LDAPTLSConfig{
 			Verify: false,
 		},
@@ -39,7 +39,7 @@ func TestSambaADIntegration(t *testing.T) {
 			},
 		},
 		BindDN:             envOr("WORDWARDEN_SAMBA_AD_BIND_DN", "Administrator@EXAMPLE.TEST"),
-		BaseDN:             envOr("WORDWARDEN_SAMBA_AD_BASE_DN", "DC=example,DC=test"),
+		BaseDN:             envOr("WORDWARDEN_SAMBA_AD_BASE_DN", "CN=Users,DC=example,DC=test"),
 		UserFilter:         "(|(sAMAccountName={username})(userPrincipalName={username})(mail={username}))",
 		FilterTemplateMode: "builtin_or_template",
 		Attributes:         []string{"sAMAccountName", "mail", "displayName", "memberOf"},

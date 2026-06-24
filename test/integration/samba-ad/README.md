@@ -4,7 +4,7 @@ This fixture starts a local Samba Active Directory Domain Controller for guarded
 Wordwarden LDAP integration tests. It is intended for local compatibility checks,
 not for production or CI-by-default use.
 
-The container exposes LDAP on `localhost:1389`. The fixture disables Samba's
+The container exposes LDAP on `localhost:1390`. The fixture disables Samba's
 "strong auth" LDAP requirement so the local test can use plain LDAP on the
 loopback interface. Production deployments should use LDAPS or StartTLS with
 certificate verification.
@@ -31,9 +31,9 @@ Defaults used by the test:
 
 | Setting | Value |
 | --- | --- |
-| LDAP URL | `ldap://localhost:1389` |
+| LDAP URL | `ldap://localhost:1390` |
 | Realm | `EXAMPLE.TEST` |
-| Base DN | `DC=example,DC=test` |
+| Base DN | `CN=Users,DC=example,DC=test` |
 | Bind DN | `Administrator@EXAMPLE.TEST` |
 | Bind password | `Passw0rd!` |
 | Test username | `alice` |

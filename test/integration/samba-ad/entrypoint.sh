@@ -12,7 +12,7 @@ mkdir -p /var/lib/samba/private /var/cache/samba /run/samba
 
 if [ ! -f /var/lib/samba/private/sam.ldb ]; then
   rm -f /etc/samba/smb.conf
-  samba-tool domain provision     --use-rfc2307     --realm="${REALM}"     --domain="${DOMAIN}"     --server-role=dc     --dns-backend=SAMBA_INTERNAL     --adminpass="${ADMIN_PASSWORD}"     --host-ip="${HOST_IP}"
+  samba-tool domain provision     --use-rfc2307     --realm="${REALM}"     --domain="${DOMAIN}"     --server-role=dc     --dns-backend=SAMBA_INTERNAL     --adminpass="${ADMIN_PASSWORD}"     --host-ip="${HOST_IP}"     --option="posix:eadb = /var/lib/samba/private/eadb.tdb"     --option="acl_xattr:ignore system acls = yes"
 
   cat >> /etc/samba/smb.conf <<EOF
 
@@ -21,7 +21,8 @@ if [ ! -f /var/lib/samba/private/sam.ldb ]; then
         dns forwarder = ${DNS_FORWARDER}
 EOF
 
-  samba-tool user create alice "${ALICE_PASSWORD}"     --given-name=Alice     --surname=Example     --mail-address=alice@example.test     --must-change-at-next-login=no
+  samba-tool user create alice "${ALICE_PASSWORD}"     --given-name=Alice     --surname=Example     --mail-address=alice@example.test
+  samba-tool user setexpiry alice --noexpiry
   samba-tool group add staff || true
   samba-tool group addmembers staff alice || true
 fi

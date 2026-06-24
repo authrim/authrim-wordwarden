@@ -214,7 +214,7 @@ WORDWARDEN_SAMBA_AD_INTEGRATION=1 go test ./internal/adapters/ldap -run TestSamb
 docker compose -f test/integration/samba-ad/docker-compose.yml down -v
 ```
 
-The fixture uses plain LDAP on `localhost:1389` and disables Samba's strong LDAP
+The fixture uses plain LDAP on `localhost:1390` and disables Samba's strong LDAP
 auth requirement for local testing only. Production AD deployments should use
 LDAPS or StartTLS with certificate verification.
 
