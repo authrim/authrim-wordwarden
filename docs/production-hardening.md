@@ -185,3 +185,10 @@ Repeated replay or storm events:
 - Check for retry middleware replaying signed bodies.
 - Review ingress logs for repeated source addresses.
 - Tighten edge rate limits if the endpoint is public.
+
+## Connector Fleet rollout and incident handling
+
+Before enabling directory password login for production tenants, read
+`docs/fleet-operations.md` and verify that operators know how to identify stale
+instances, acknowledge incidents, deactivate a single instance, rotate heartbeat
+keys, and perform rolling upgrades without losing `server.state_dir`.

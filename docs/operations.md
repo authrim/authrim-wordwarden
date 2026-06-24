@@ -177,6 +177,12 @@ Common causes:
 Do not use `/healthz` as proof that LDAP login works. `/healthz` is intentionally
 shallow.
 
+## Connector Fleet Operations
+
+Use `docs/fleet-operations.md` for heartbeat triage, instance acknowledge /
+deactivate / reactivate operations, heartbeat key rotation, and rolling upgrade
+procedures.
+
 ## OpenLDAP Fixture
 
 The local OpenLDAP fixture is guarded by `WORDWARDEN_LDAP_INTEGRATION=1`.
@@ -195,6 +201,43 @@ certificate using the generated local CA.
 
 The generated fixture server key is made host-readable so the OpenLDAP container
 can copy it during bootstrap. These certificates are local test material only.
+
+## Samba AD Fixture
+
+The local Samba AD fixture is guarded by `WORDWARDEN_SAMBA_AD_INTEGRATION=1`.
+It is useful for checking Active Directory profile defaults such as `objectGUID`,
+`sAMAccountName`, `memberOf`, and AD-style bind behavior.
+
+```bash
+docker compose -f test/integration/samba-ad/docker-compose.yml up -d --build
+WORDWARDEN_SAMBA_AD_INTEGRATION=1 go test ./internal/adapters/ldap -run TestSambaADIntegration
+docker compose -f test/integration/samba-ad/docker-compose.yml down -v
+```
+
+The fixture uses plain LDAP on `localhost:1389` and disables Samba's strong LDAP
+auth requirement for local testing only. Production AD deployments should use
+LDAPS or StartTLS with certificate verification.
+
+## Real AD Guarded Test
+
+A real Active Directory smoke test is available but disabled by default. It is
+intended for lab or customer-owned domain controllers only.
+
+```bash
+WORDWARDEN_REAL_AD_INTEGRATION=1 \
+WORDWARDEN_REAL_AD_URL=ldaps://dc.example.edu:636 \
+WORDWARDEN_REAL_AD_BIND_DN='CN=Wordwarden Bind,OU=Service Accounts,DC=example,DC=edu' \
+WORDWARDEN_REAL_AD_BIND_PASSWORD='...' \
+WORDWARDEN_REAL_AD_BASE_DN='DC=example,DC=edu' \
+WORDWARDEN_REAL_AD_USERNAME='alice' \
+WORDWARDEN_REAL_AD_PASSWORD='...' \
+go test ./internal/adapters/ldap -run TestRealADIntegration
+```
+
+Optional variables include `WORDWARDEN_REAL_AD_CA_FILE`,
+`WORDWARDEN_REAL_AD_TLS_SERVER_NAME`, `WORDWARDEN_REAL_AD_STARTTLS`,
+`WORDWARDEN_REAL_AD_USER_FILTER`, `WORDWARDEN_REAL_AD_SUBJECT_ATTRIBUTE`,
+`WORDWARDEN_REAL_AD_GROUP_STRATEGY`, and `WORDWARDEN_REAL_AD_GROUPS`.
 
 ## Deployment Samples
 

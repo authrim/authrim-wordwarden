@@ -116,3 +116,9 @@ Direct HTTPS and Cloudflare Tunnel expose an inbound Wordwarden endpoint.
 Outbound relay does not. For relay incidents, start with the WebSocket status in
 Authrim and the Wordwarden process logs; for direct/tunnel incidents, start with
 public `/healthz` reachability and HMAC request validation.
+
+## Connector Fleet operations
+
+Relay deployments register fleet metadata during WebSocket authentication. Use
+`docs/fleet-operations.md` for incident triage, deactivation, reactivation,
+heartbeat key rotation guidance, and rolling upgrades.

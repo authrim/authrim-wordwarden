@@ -1,0 +1,21 @@
+services:
+  samba-ad:
+    build:
+      context: .
+    container_name: wordwarden-samba-ad
+    hostname: dc1
+    environment:
+      SAMBA_REALM: EXAMPLE.TEST
+      SAMBA_DOMAIN: EXAMPLE
+      SAMBA_ADMIN_PASSWORD: Passw0rd!
+      SAMBA_ALICE_PASSWORD: Password123!
+      SAMBA_HOST_IP: 127.0.0.1
+      SAMBA_DNS_FORWARDER: 1.1.1.1
+    ports:
+      - "1389:389"
+      - "1637:636"
+    healthcheck:
+      test: ["CMD-SHELL", "ldbsearch -H /var/lib/samba/private/sam.ldb -b DC=example,DC=test '(sAMAccountName=alice)' sAMAccountName >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30

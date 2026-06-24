@@ -2,8 +2,8 @@
 
 This document contains practical Authrim Wordwarden configuration examples for
 real deployments. The examples use the current beta schema and avoid features
-that are planned but not implemented yet, such as advanced group mapping and
-automatic referral chasing.
+that are intentionally constrained, such as advanced role mapping and
+recursive or automatic referral chasing.
 
 Use `docs/configuration.md` for field-level behavior and validation rules.
 
