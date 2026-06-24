@@ -82,9 +82,22 @@ Success response:
     "uid": ["alice"],
     "mail": ["alice@example.com"]
   },
+  "group_facts": [
+    {
+      "id": "staff",
+      "dn": "cn=staff,ou=Groups,dc=example,dc=com",
+      "display": "Staff",
+      "source": "memberOf",
+      "depth": 1
+    }
+  ],
   "directory_status": "ok"
 }
 ```
+
+`group_facts` is returned only when group lookup is enabled and the request
+asks for the configured group response attribute. It is a directory fact, not a
+role or claim decision.
 
 Invalid credentials response:
 

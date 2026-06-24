@@ -171,6 +171,9 @@ func TestVerifyPasswordSuccess(t *testing.T) {
 	if body.Attributes["mail"][0] != "alice@example.com" {
 		t.Fatalf("Attributes = %#v", body.Attributes)
 	}
+	if len(body.GroupFacts) != 1 || body.GroupFacts[0].ID != "staff" {
+		t.Fatalf("GroupFacts = %#v", body.GroupFacts)
+	}
 }
 
 func TestVerifyPasswordInvalidCredentials(t *testing.T) {
@@ -923,5 +926,14 @@ func (fakeDirectory) VerifyPassword(_ context.Context, request directory.VerifyP
 			Username:    request.Username,
 		},
 		attrs,
+		[]directory.GroupFact{
+			{
+				ID:      "staff",
+				DN:      "cn=staff,ou=Groups,dc=example,dc=com",
+				Display: "Staff",
+				Source:  "memberOf",
+				Depth:   1,
+			},
+		},
 	), nil
 }

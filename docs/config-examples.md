@@ -428,6 +428,11 @@ tenants:
       base_dn: "dc=example,dc=edu"
       user_filter: "(uid={username})"
       filter_template_mode: "builtin_or_template"
+      directory_profile:
+        name: "generic"
+        subject_attribute: "entryUUID"
+        group_strategy: "member_attribute_only"
+        status_normalization: "generic"
       attributes:
         - uid
         - mail
@@ -435,7 +440,13 @@ tenants:
       groups:
         enabled: true
         member_attribute: "memberOf"
+        search_member_attribute: "memberOf"
         response_attribute: "groups"
+        id_attribute: "cn"
+        display_attribute: "cn"
+        max_depth: 1
+        max_groups: 100
+        timeout_ms: 1000
       referrals:
         mode: "disabled"
       pool:

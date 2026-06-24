@@ -200,12 +200,21 @@ type verifyPasswordResponse struct {
 	Reason          string              `json:"reason,omitempty"`
 	Subject         *subjectResponse    `json:"subject,omitempty"`
 	Attributes      map[string][]string `json:"attributes,omitempty"`
+	GroupFacts      []groupFactResponse `json:"group_facts,omitempty"`
 	DirectoryStatus string              `json:"directory_status"`
 }
 
 type subjectResponse struct {
 	DirectoryID string `json:"directory_id"`
 	Username    string `json:"username"`
+}
+
+type groupFactResponse struct {
+	ID      string `json:"id"`
+	DN      string `json:"dn"`
+	Display string `json:"display"`
+	Source  string `json:"source"`
+	Depth   int    `json:"depth"`
 }
 
 type errorResponse struct {
@@ -516,8 +525,26 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 			Username:    result.Subject.Username,
 		},
 		Attributes:      result.Attributes,
+		GroupFacts:      groupFactResponses(result.GroupFacts),
 		DirectoryStatus: "ok",
 	})
+}
+
+func groupFactResponses(facts []directory.GroupFact) []groupFactResponse {
+	if len(facts) == 0 {
+		return nil
+	}
+	result := make([]groupFactResponse, 0, len(facts))
+	for _, fact := range facts {
+		result = append(result, groupFactResponse{
+			ID:      fact.ID,
+			DN:      fact.DN,
+			Display: fact.Display,
+			Source:  fact.Source,
+			Depth:   fact.Depth,
+		})
+	}
+	return result
 }
 
 func (h *handler) writeMalformedRequest(

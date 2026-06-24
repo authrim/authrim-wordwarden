@@ -53,6 +53,75 @@ func TestParseValidConfig(t *testing.T) {
 	if cfg.Tenants[0].Timeouts.RequestMS != 2500 {
 		t.Fatalf("default request timeout = %d", cfg.Tenants[0].Timeouts.RequestMS)
 	}
+	if cfg.Tenants[0].LDAP.DirectoryProfile.Name != "generic" {
+		t.Fatalf("default directory profile = %q", cfg.Tenants[0].LDAP.DirectoryProfile.Name)
+	}
+}
+
+func TestParseAppliesActiveDirectoryProfileDefaults(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `directory_profile:
+        name: "active_directory"
+      lookup_mode: "search_then_bind"`, 1)
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	profile := cfg.Tenants[0].LDAP.DirectoryProfile
+	if profile.SubjectAttribute != "objectGUID" {
+		t.Fatalf("SubjectAttribute = %q", profile.SubjectAttribute)
+	}
+	if profile.GroupStrategy != "ad_matching_rule" {
+		t.Fatalf("GroupStrategy = %q", profile.GroupStrategy)
+	}
+	if cfg.Tenants[0].LDAP.Groups.SearchMemberAttribute != "member" {
+		t.Fatalf("SearchMemberAttribute = %q", cfg.Tenants[0].LDAP.Groups.SearchMemberAttribute)
+	}
+}
+
+func TestParseAllowsPagedSearchControls(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `directory_profile:
+        name: "openldap"
+        paged_search:
+          enabled: true
+          page_size: 250
+          max_entries: 1000
+          timeout_ms: 2000
+      lookup_mode: "search_then_bind"`, 1)
+
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	paged := cfg.Tenants[0].LDAP.DirectoryProfile.PagedSearch
+	if !paged.Enabled || paged.PageSize != 250 || paged.MaxEntries != 1000 || paged.TimeoutMS != 2000 {
+		t.Fatalf("PagedSearch = %#v", paged)
+	}
+}
+
+func TestParseRejectsExcessivePagedSearchControls(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `directory_profile:
+        name: "openldap"
+        paged_search:
+          enabled: true
+          page_size: 10001
+          max_entries: 100001
+          timeout_ms: 60001
+      lookup_mode: "search_then_bind"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want paged search bounds errors")
+	}
+	for _, want := range []string{
+		"paged_search.page_size must be 10000 or less",
+		"paged_search.max_entries must be 100000 or less",
+		"paged_search.timeout_ms must be 60000 or less",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Parse() error = %v, want %q", err, want)
+		}
+	}
 }
 
 func TestParseAllowsMultipleLDAPSURLs(t *testing.T) {
@@ -125,10 +194,27 @@ func TestParseAllowsReferralAllowlist(t *testing.T) {
         mode: "allowlist"
         allowed_urls:
           - "ldaps://ldap-referral.example.com:636"
+        allow_service_bind_reuse: true
 `
 
 	_, err := Parse([]byte(raw))
 	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsReferralBindReuseWhenDisabled(t *testing.T) {
+	raw := validConfig + `
+      referrals:
+        mode: "disabled"
+        allow_service_bind_reuse: true
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want bind reuse validation error")
+	}
+	if !strings.Contains(err.Error(), "allow_service_bind_reuse must be false when mode is disabled") {
 		t.Fatalf("Parse() error = %v", err)
 	}
 }
@@ -181,6 +267,66 @@ func TestParseAllowsGroupPrimitive(t *testing.T) {
 	}
 	if !cfg.Tenants[0].LDAP.Groups.Enabled {
 		t.Fatal("LDAP.Groups.Enabled = false")
+	}
+}
+
+func TestParseRejectsUnsafeDirectoryProfileAttribute(t *testing.T) {
+	raw := strings.Replace(validConfig, `lookup_mode: "search_then_bind"`, `directory_profile:
+        name: "generic"
+        subject_attribute: "uid)(|(objectClass=*)"
+      lookup_mode: "search_then_bind"`, 1)
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want unsafe attribute validation error")
+	}
+	if !strings.Contains(err.Error(), "subject_attribute must be a safe LDAP attribute description") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsUnsafeGroupSearchAttribute(t *testing.T) {
+	raw := validConfig + `
+      groups:
+        enabled: true
+        member_attribute: "memberOf"
+        search_member_attribute: "member)(|(objectClass=*)"
+        response_attribute: "groups"
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want unsafe group attribute validation error")
+	}
+	if !strings.Contains(err.Error(), "search_member_attribute must be a safe LDAP attribute description") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsExcessiveGroupLimits(t *testing.T) {
+	raw := validConfig + `
+      groups:
+        enabled: true
+        member_attribute: "memberOf"
+        search_member_attribute: "member"
+        response_attribute: "groups"
+        max_depth: 21
+        max_groups: 10001
+        timeout_ms: 60001
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want group limit validation errors")
+	}
+	for _, want := range []string{
+		"groups.max_depth must be 20 or less",
+		"groups.max_groups must be 10000 or less",
+		"groups.timeout_ms must be 60000 or less",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Parse() error = %v, want %q", err, want)
+		}
 	}
 }
 

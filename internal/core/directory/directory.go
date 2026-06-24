@@ -43,6 +43,14 @@ type Subject struct {
 	Username    string
 }
 
+type GroupFact struct {
+	ID      string
+	DN      string
+	Display string
+	Source  string
+	Depth   int
+}
+
 type VerifyPasswordRequest struct {
 	Username       string
 	Password       string
@@ -73,14 +81,20 @@ type VerifyPasswordResult struct {
 	Reason     string
 	Subject    Subject
 	Attributes map[string][]string
+	GroupFacts []GroupFact
 }
 
-func SuccessfulVerification(subject Subject, attributes map[string][]string) VerifyPasswordResult {
+func SuccessfulVerification(subject Subject, attributes map[string][]string, groupFacts ...[]GroupFact) VerifyPasswordResult {
+	var facts []GroupFact
+	if len(groupFacts) > 0 {
+		facts = groupFacts[0]
+	}
 	return VerifyPasswordResult{
 		Result:     CredentialResultSuccess,
 		Success:    true,
 		Subject:    subject,
 		Attributes: attributes,
+		GroupFacts: facts,
 	}
 }
 

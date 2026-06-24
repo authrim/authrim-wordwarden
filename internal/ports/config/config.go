@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/authrim/authrim-wordwarden/internal/ports/secrets"
@@ -69,21 +70,38 @@ type HMACKeyConfig struct {
 }
 
 type LDAPConfig struct {
-	URL                string         `yaml:"url"`
-	URLs               []string       `yaml:"urls"`
-	TLS                LDAPTLSConfig  `yaml:"tls"`
-	LookupMode         string         `yaml:"lookup_mode"`
-	Username           UsernameConfig `yaml:"username"`
-	BindDN             string         `yaml:"bind_dn"`
-	BindPasswordRef    string         `yaml:"bind_password_ref"`
-	BaseDN             string         `yaml:"base_dn"`
-	DNTemplate         string         `yaml:"dn_template"`
-	UserFilter         string         `yaml:"user_filter"`
-	FilterTemplateMode string         `yaml:"filter_template_mode"`
-	Attributes         []string       `yaml:"attributes"`
-	Referrals          ReferralConfig `yaml:"referrals"`
-	Groups             GroupConfig    `yaml:"groups"`
-	Pool               PoolConfig     `yaml:"pool"`
+	URL                string                 `yaml:"url"`
+	URLs               []string               `yaml:"urls"`
+	TLS                LDAPTLSConfig          `yaml:"tls"`
+	DirectoryProfile   DirectoryProfileConfig `yaml:"directory_profile"`
+	LookupMode         string                 `yaml:"lookup_mode"`
+	Username           UsernameConfig         `yaml:"username"`
+	BindDN             string                 `yaml:"bind_dn"`
+	BindPasswordRef    string                 `yaml:"bind_password_ref"`
+	BaseDN             string                 `yaml:"base_dn"`
+	DNTemplate         string                 `yaml:"dn_template"`
+	UserFilter         string                 `yaml:"user_filter"`
+	FilterTemplateMode string                 `yaml:"filter_template_mode"`
+	Attributes         []string               `yaml:"attributes"`
+	Referrals          ReferralConfig         `yaml:"referrals"`
+	Groups             GroupConfig            `yaml:"groups"`
+	Pool               PoolConfig             `yaml:"pool"`
+}
+
+type DirectoryProfileConfig struct {
+	Name                 string            `yaml:"name"`
+	SubjectAttribute     string            `yaml:"subject_attribute"`
+	IdentifierAttributes []string          `yaml:"identifier_attributes"`
+	GroupStrategy        string            `yaml:"group_strategy"`
+	StatusNormalization  string            `yaml:"status_normalization"`
+	PagedSearch          PagedSearchConfig `yaml:"paged_search"`
+}
+
+type PagedSearchConfig struct {
+	Enabled    bool `yaml:"enabled"`
+	PageSize   int  `yaml:"page_size"`
+	MaxEntries int  `yaml:"max_entries"`
+	TimeoutMS  int  `yaml:"timeout_ms"`
 }
 
 type LDAPTLSConfig struct {
@@ -94,14 +112,22 @@ type LDAPTLSConfig struct {
 }
 
 type ReferralConfig struct {
-	Mode        string   `yaml:"mode"`
-	AllowedURLs []string `yaml:"allowed_urls"`
+	Mode                  string   `yaml:"mode"`
+	AllowedURLs           []string `yaml:"allowed_urls"`
+	AllowServiceBindReuse bool     `yaml:"allow_service_bind_reuse"`
 }
 
 type GroupConfig struct {
-	Enabled           bool   `yaml:"enabled"`
-	MemberAttribute   string `yaml:"member_attribute"`
-	ResponseAttribute string `yaml:"response_attribute"`
+	Enabled               bool   `yaml:"enabled"`
+	MemberAttribute       string `yaml:"member_attribute"`
+	SearchMemberAttribute string `yaml:"search_member_attribute"`
+	ResponseAttribute     string `yaml:"response_attribute"`
+	IDAttribute           string `yaml:"id_attribute"`
+	DisplayAttribute      string `yaml:"display_attribute"`
+	SearchBaseDN          string `yaml:"search_base_dn"`
+	MaxDepth              int    `yaml:"max_depth"`
+	MaxGroups             int    `yaml:"max_groups"`
+	TimeoutMS             int    `yaml:"timeout_ms"`
 }
 
 type PoolConfig struct {
@@ -169,6 +195,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Server.Listen = "127.0.0.1:8080"
 	}
 	for i := range cfg.Tenants {
+		applyDirectoryProfileDefaults(&cfg.Tenants[i].LDAP)
 		if cfg.Tenants[i].LDAP.LookupMode == "" {
 			cfg.Tenants[i].LDAP.LookupMode = "search_then_bind"
 		}
@@ -181,8 +208,41 @@ func applyDefaults(cfg *Config) {
 		if cfg.Tenants[i].LDAP.Groups.MemberAttribute == "" {
 			cfg.Tenants[i].LDAP.Groups.MemberAttribute = "memberOf"
 		}
+		if cfg.Tenants[i].LDAP.Groups.SearchMemberAttribute == "" {
+			if cfg.Tenants[i].LDAP.DirectoryProfile.GroupStrategy == "ad_matching_rule" {
+				cfg.Tenants[i].LDAP.Groups.SearchMemberAttribute = "member"
+			} else {
+				cfg.Tenants[i].LDAP.Groups.SearchMemberAttribute = cfg.Tenants[i].LDAP.Groups.MemberAttribute
+			}
+		}
 		if cfg.Tenants[i].LDAP.Groups.ResponseAttribute == "" {
 			cfg.Tenants[i].LDAP.Groups.ResponseAttribute = "groups"
+		}
+		if cfg.Tenants[i].LDAP.Groups.IDAttribute == "" {
+			cfg.Tenants[i].LDAP.Groups.IDAttribute = "cn"
+		}
+		if cfg.Tenants[i].LDAP.Groups.DisplayAttribute == "" {
+			cfg.Tenants[i].LDAP.Groups.DisplayAttribute = "cn"
+		}
+		if cfg.Tenants[i].LDAP.Groups.MaxDepth == 0 {
+			cfg.Tenants[i].LDAP.Groups.MaxDepth = 1
+		}
+		if cfg.Tenants[i].LDAP.Groups.MaxGroups == 0 {
+			cfg.Tenants[i].LDAP.Groups.MaxGroups = 100
+		}
+		if cfg.Tenants[i].LDAP.Groups.TimeoutMS == 0 {
+			cfg.Tenants[i].LDAP.Groups.TimeoutMS = 1000
+		}
+		if cfg.Tenants[i].LDAP.DirectoryProfile.PagedSearch.Enabled {
+			if cfg.Tenants[i].LDAP.DirectoryProfile.PagedSearch.PageSize == 0 {
+				cfg.Tenants[i].LDAP.DirectoryProfile.PagedSearch.PageSize = 500
+			}
+			if cfg.Tenants[i].LDAP.DirectoryProfile.PagedSearch.MaxEntries == 0 {
+				cfg.Tenants[i].LDAP.DirectoryProfile.PagedSearch.MaxEntries = 5000
+			}
+			if cfg.Tenants[i].LDAP.DirectoryProfile.PagedSearch.TimeoutMS == 0 {
+				cfg.Tenants[i].LDAP.DirectoryProfile.PagedSearch.TimeoutMS = 3000
+			}
 		}
 		if cfg.Tenants[i].Timeouts.LDAPConnectMS == 0 {
 			cfg.Tenants[i].Timeouts.LDAPConnectMS = 500
@@ -219,6 +279,47 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Tenants[i].Protection.DirectoryErrorLimit == 0 {
 			cfg.Tenants[i].Protection.DirectoryErrorLimit = 5
+		}
+	}
+}
+
+func applyDirectoryProfileDefaults(ldap *LDAPConfig) {
+	if ldap.DirectoryProfile.Name == "" {
+		ldap.DirectoryProfile.Name = "generic"
+	}
+	switch ldap.DirectoryProfile.Name {
+	case "active_directory":
+		if ldap.DirectoryProfile.SubjectAttribute == "" {
+			ldap.DirectoryProfile.SubjectAttribute = "objectGUID"
+		}
+		if len(ldap.DirectoryProfile.IdentifierAttributes) == 0 {
+			ldap.DirectoryProfile.IdentifierAttributes = []string{"sAMAccountName", "userPrincipalName", "mail"}
+		}
+		if ldap.DirectoryProfile.GroupStrategy == "" {
+			ldap.DirectoryProfile.GroupStrategy = "ad_matching_rule"
+		}
+		if ldap.DirectoryProfile.StatusNormalization == "" {
+			ldap.DirectoryProfile.StatusNormalization = "active_directory"
+		}
+	case "openldap":
+		if ldap.DirectoryProfile.SubjectAttribute == "" {
+			ldap.DirectoryProfile.SubjectAttribute = "entryUUID"
+		}
+		if len(ldap.DirectoryProfile.IdentifierAttributes) == 0 {
+			ldap.DirectoryProfile.IdentifierAttributes = []string{"uid", "mail"}
+		}
+		if ldap.DirectoryProfile.GroupStrategy == "" {
+			ldap.DirectoryProfile.GroupStrategy = "member_attribute_only"
+		}
+		if ldap.DirectoryProfile.StatusNormalization == "" {
+			ldap.DirectoryProfile.StatusNormalization = "generic"
+		}
+	case "generic":
+		if ldap.DirectoryProfile.GroupStrategy == "" {
+			ldap.DirectoryProfile.GroupStrategy = "member_attribute_only"
+		}
+		if ldap.DirectoryProfile.StatusNormalization == "" {
+			ldap.DirectoryProfile.StatusNormalization = "generic"
 		}
 	}
 }
@@ -363,6 +464,7 @@ func validateRelay(problems *[]string, prefix string, relay RelayConfig, tenantI
 
 func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 	validateLDAPURLs(problems, prefix, ldap)
+	validateDirectoryProfile(problems, prefix+".directory_profile", ldap.DirectoryProfile)
 	if !ldap.TLS.Verify {
 		*problems = append(*problems, prefix+".tls.verify must be true")
 	}
@@ -413,6 +515,51 @@ func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 		*problems = append(*problems, prefix+".attributes must contain at least one attribute")
 	}
 	validateUsername(problems, prefix+".username", ldap.Username)
+}
+
+func validateDirectoryProfile(problems *[]string, prefix string, profile DirectoryProfileConfig) {
+	switch profile.Name {
+	case "active_directory", "openldap", "generic":
+	default:
+		*problems = append(*problems, prefix+".name must be active_directory, openldap, or generic")
+	}
+	for i, attribute := range profile.IdentifierAttributes {
+		if strings.TrimSpace(attribute) == "" {
+			*problems = append(*problems, fmt.Sprintf("%s.identifier_attributes[%d] must not be empty", prefix, i))
+		} else if !validLDAPAttributeDescription(attribute) {
+			*problems = append(*problems, fmt.Sprintf("%s.identifier_attributes[%d] must be a safe LDAP attribute description", prefix, i))
+		}
+	}
+	if profile.SubjectAttribute != "" && !validLDAPAttributeDescription(profile.SubjectAttribute) {
+		*problems = append(*problems, prefix+".subject_attribute must be a safe LDAP attribute description")
+	}
+	switch profile.GroupStrategy {
+	case "member_attribute_only", "ad_matching_rule", "bfs_member_search":
+	default:
+		*problems = append(*problems, prefix+".group_strategy must be member_attribute_only, ad_matching_rule, or bfs_member_search")
+	}
+	switch profile.StatusNormalization {
+	case "generic", "active_directory":
+	default:
+		*problems = append(*problems, prefix+".status_normalization must be generic or active_directory")
+	}
+	if profile.PagedSearch.Enabled {
+		if profile.PagedSearch.PageSize <= 0 {
+			*problems = append(*problems, prefix+".paged_search.page_size must be positive when paged search is enabled")
+		} else if profile.PagedSearch.PageSize > 10000 {
+			*problems = append(*problems, prefix+".paged_search.page_size must be 10000 or less")
+		}
+		if profile.PagedSearch.MaxEntries <= 0 {
+			*problems = append(*problems, prefix+".paged_search.max_entries must be positive when paged search is enabled")
+		} else if profile.PagedSearch.MaxEntries > 100000 {
+			*problems = append(*problems, prefix+".paged_search.max_entries must be 100000 or less")
+		}
+		if profile.PagedSearch.TimeoutMS <= 0 {
+			*problems = append(*problems, prefix+".paged_search.timeout_ms must be positive when paged search is enabled")
+		} else if profile.PagedSearch.TimeoutMS > 60000 {
+			*problems = append(*problems, prefix+".paged_search.timeout_ms must be 60000 or less")
+		}
+	}
 }
 
 func validatePool(problems *[]string, prefix string, pool PoolConfig) {
@@ -482,6 +629,9 @@ func validateReferrals(problems *[]string, prefix string, referrals ReferralConf
 		if len(referrals.AllowedURLs) > 0 {
 			*problems = append(*problems, prefix+".allowed_urls must be empty when mode is disabled")
 		}
+		if referrals.AllowServiceBindReuse {
+			*problems = append(*problems, prefix+".allow_service_bind_reuse must be false when mode is disabled")
+		}
 	case "allowlist":
 		if len(referrals.AllowedURLs) == 0 {
 			*problems = append(*problems, prefix+".allowed_urls is required when mode is allowlist")
@@ -512,10 +662,50 @@ func validateGroups(problems *[]string, prefix string, groups GroupConfig) {
 	}
 	if groups.MemberAttribute == "" {
 		*problems = append(*problems, prefix+".member_attribute is required when groups.enabled is true")
+	} else if !validLDAPAttributeDescription(groups.MemberAttribute) {
+		*problems = append(*problems, prefix+".member_attribute must be a safe LDAP attribute description")
+	}
+	if groups.SearchMemberAttribute == "" {
+		*problems = append(*problems, prefix+".search_member_attribute is required when groups.enabled is true")
+	} else if !validLDAPAttributeDescription(groups.SearchMemberAttribute) {
+		*problems = append(*problems, prefix+".search_member_attribute must be a safe LDAP attribute description")
 	}
 	if groups.ResponseAttribute == "" {
 		*problems = append(*problems, prefix+".response_attribute is required when groups.enabled is true")
+	} else if !validLDAPAttributeDescription(groups.ResponseAttribute) {
+		*problems = append(*problems, prefix+".response_attribute must be a safe LDAP attribute description")
 	}
+	if groups.IDAttribute == "" {
+		*problems = append(*problems, prefix+".id_attribute is required when groups.enabled is true")
+	} else if !validLDAPAttributeDescription(groups.IDAttribute) {
+		*problems = append(*problems, prefix+".id_attribute must be a safe LDAP attribute description")
+	}
+	if groups.DisplayAttribute == "" {
+		*problems = append(*problems, prefix+".display_attribute is required when groups.enabled is true")
+	} else if !validLDAPAttributeDescription(groups.DisplayAttribute) {
+		*problems = append(*problems, prefix+".display_attribute must be a safe LDAP attribute description")
+	}
+	if groups.MaxDepth <= 0 {
+		*problems = append(*problems, prefix+".max_depth must be positive when groups.enabled is true")
+	} else if groups.MaxDepth > 20 {
+		*problems = append(*problems, prefix+".max_depth must be 20 or less")
+	}
+	if groups.MaxGroups <= 0 {
+		*problems = append(*problems, prefix+".max_groups must be positive when groups.enabled is true")
+	} else if groups.MaxGroups > 10000 {
+		*problems = append(*problems, prefix+".max_groups must be 10000 or less")
+	}
+	if groups.TimeoutMS <= 0 {
+		*problems = append(*problems, prefix+".timeout_ms must be positive when groups.enabled is true")
+	} else if groups.TimeoutMS > 60000 {
+		*problems = append(*problems, prefix+".timeout_ms must be 60000 or less")
+	}
+}
+
+var ldapAttributeDescriptionPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*(;[A-Za-z0-9-]+)*$`)
+
+func validLDAPAttributeDescription(value string) bool {
+	return ldapAttributeDescriptionPattern.MatchString(value)
 }
 
 func validateUsername(problems *[]string, prefix string, username UsernameConfig) {

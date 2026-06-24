@@ -94,6 +94,9 @@ func TestDialPreservesDirectoryTLSError(t *testing.T) {
 func TestGroupPrimitiveSearchAndResponseAttributes(t *testing.T) {
 	client := NewClient(config.LDAPConfig{
 		Attributes: []string{"uid", "mail"},
+		DirectoryProfile: config.DirectoryProfileConfig{
+			SubjectAttribute: "entryUUID",
+		},
 		Groups: config.GroupConfig{
 			Enabled:           true,
 			MemberAttribute:   "memberOf",
@@ -102,7 +105,7 @@ func TestGroupPrimitiveSearchAndResponseAttributes(t *testing.T) {
 	}, "", config.TimeoutConfig{})
 
 	searchAttrs := client.searchAttributes([]string{"mail", "groups"})
-	if !reflect.DeepEqual(searchAttrs, []string{"mail", "memberOf"}) {
+	if !reflect.DeepEqual(searchAttrs, []string{"mail", "entryUUID", "memberOf"}) {
 		t.Fatalf("searchAttributes() = %#v", searchAttrs)
 	}
 
@@ -110,6 +113,7 @@ func TestGroupPrimitiveSearchAndResponseAttributes(t *testing.T) {
 		DN: "uid=alice,ou=People,dc=example,dc=com",
 		Attributes: []*ldap.EntryAttribute{
 			{Name: "mail", Values: []string{"alice@example.com"}},
+			{Name: "entryUUID", Values: []string{"entry-uuid-alice"}},
 			{Name: "memberOf", Values: []string{"cn=staff,ou=Groups,dc=example,dc=com"}},
 		},
 	}
@@ -122,6 +126,120 @@ func TestGroupPrimitiveSearchAndResponseAttributes(t *testing.T) {
 	}
 	if _, ok := attrs["memberOf"]; ok {
 		t.Fatalf("memberOf should not be returned directly: %#v", attrs)
+	}
+	if _, ok := attrs["entryUUID"]; ok {
+		t.Fatalf("subject attribute should not be returned unless allowlisted and requested: %#v", attrs)
+	}
+	if got := client.entrySubjectValue(entry); got != "entry-uuid-alice" {
+		t.Fatalf("entrySubjectValue() = %q", got)
+	}
+}
+
+func TestMemberAttributeGroupFacts(t *testing.T) {
+	client := NewClient(config.LDAPConfig{
+		Groups: config.GroupConfig{
+			Enabled:           true,
+			MemberAttribute:   "memberOf",
+			ResponseAttribute: "groups",
+			MaxGroups:         10,
+		},
+	}, "", config.TimeoutConfig{})
+	entry := &ldap.Entry{
+		DN: "uid=alice,ou=People,dc=example,dc=com",
+		Attributes: []*ldap.EntryAttribute{
+			{Name: "memberOf", Values: []string{"cn=staff,ou=Groups,dc=example,dc=com"}},
+		},
+	}
+
+	facts := client.groupFacts(context.Background(), nil, entry, []string{"groups"})
+	if len(facts) != 1 {
+		t.Fatalf("groupFacts len = %d", len(facts))
+	}
+	if facts[0].DN != "cn=staff,ou=Groups,dc=example,dc=com" || facts[0].Depth != 1 {
+		t.Fatalf("groupFact = %#v", facts[0])
+	}
+}
+
+func TestActiveDirectoryObjectGUIDSubjectIsBase64URL(t *testing.T) {
+	client := NewClient(config.LDAPConfig{
+		DirectoryProfile: config.DirectoryProfileConfig{
+			Name:             "active_directory",
+			SubjectAttribute: "objectGUID",
+		},
+	}, "", config.TimeoutConfig{})
+	entry := &ldap.Entry{
+		DN: "cn=Alice,ou=People,dc=example,dc=com",
+		Attributes: []*ldap.EntryAttribute{
+			{Name: "objectGUID", ByteValues: [][]byte{{0x01, 0x02, 0x03, 0x04}}},
+		},
+	}
+
+	if got := client.entrySubjectValue(entry); got != "AQIDBA" {
+		t.Fatalf("entrySubjectValue() = %q, want base64url objectGUID", got)
+	}
+}
+
+func TestTextSubjectAttributeUsesStringValue(t *testing.T) {
+	client := NewClient(config.LDAPConfig{
+		DirectoryProfile: config.DirectoryProfileConfig{
+			Name:             "openldap",
+			SubjectAttribute: "entryUUID",
+		},
+	}, "", config.TimeoutConfig{})
+	entry := &ldap.Entry{
+		DN: "uid=alice,ou=People,dc=example,dc=com",
+		Attributes: []*ldap.EntryAttribute{
+			{Name: "entryUUID", Values: []string{"entry-uuid-alice"}},
+		},
+	}
+
+	if got := client.entrySubjectValue(entry); got != "entry-uuid-alice" {
+		t.Fatalf("entrySubjectValue() = %q", got)
+	}
+}
+
+func TestGroupFactFromEntryUsesConfiguredAttributes(t *testing.T) {
+	client := NewClient(config.LDAPConfig{
+		Groups: config.GroupConfig{
+			IDAttribute:      "cn",
+			DisplayAttribute: "displayName",
+		},
+	}, "", config.TimeoutConfig{})
+	entry := &ldap.Entry{
+		DN: "cn=staff,ou=Groups,dc=example,dc=com",
+		Attributes: []*ldap.EntryAttribute{
+			{Name: "cn", Values: []string{"staff"}},
+			{Name: "displayName", Values: []string{"Staff Group"}},
+		},
+	}
+
+	fact := client.groupFactFromEntry(entry, "test", 2)
+	if fact.ID != "staff" || fact.Display != "Staff Group" || fact.Depth != 2 {
+		t.Fatalf("groupFactFromEntry() = %#v", fact)
+	}
+}
+
+func TestAllowedReferralRequiresAllowlistedEndpoint(t *testing.T) {
+	client := NewClient(config.LDAPConfig{
+		Referrals: config.ReferralConfig{
+			Mode:        "allowlist",
+			AllowedURLs: []string{"ldaps://ldap-referral.example.com:636"},
+		},
+	}, "", config.TimeoutConfig{})
+
+	endpoint, baseDN, ok := client.allowedReferral("ldaps://ldap-referral.example.com:636/ou=People,dc=example,dc=com")
+	if !ok {
+		t.Fatal("allowedReferral() ok = false")
+	}
+	if endpoint != "ldaps://ldap-referral.example.com:636" {
+		t.Fatalf("endpoint = %q", endpoint)
+	}
+	if baseDN != "ou=People,dc=example,dc=com" {
+		t.Fatalf("baseDN = %q", baseDN)
+	}
+
+	if _, _, ok := client.allowedReferral("ldaps://evil.example.com:636/ou=People,dc=example,dc=com"); ok {
+		t.Fatal("allowedReferral() allowed unexpected endpoint")
 	}
 }
 
@@ -157,6 +275,27 @@ func TestNormalizeADInvalidCredentialsError(t *testing.T) {
 				t.Fatalf("normalizeLDAPError() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGenericProfileDoesNotNormalizeADInvalidCredentialsCodes(t *testing.T) {
+	client := NewClient(config.LDAPConfig{
+		DirectoryProfile: config.DirectoryProfileConfig{
+			Name:                "generic",
+			StatusNormalization: "generic",
+		},
+	}, "", config.TimeoutConfig{})
+	err := ldap.NewError(
+		ldap.LDAPResultInvalidCredentials,
+		fmt.Errorf("80090308: LdapErr: AcceptSecurityContext error, data 532"),
+	)
+
+	got := client.normalizeLDAPError(err)
+	if !errors.Is(got, directory.ErrInvalidCredentials) {
+		t.Fatalf("normalizeLDAPError() = %v, want %v", got, directory.ErrInvalidCredentials)
+	}
+	if errors.Is(got, directory.ErrPasswordExpired) {
+		t.Fatalf("generic profile must not normalize AD data code: %v", got)
 	}
 }
 

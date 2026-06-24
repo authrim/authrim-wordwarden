@@ -107,6 +107,7 @@ type verifyResponseMessage struct {
 	Reason              string              `json:"reason,omitempty"`
 	Subject             *subjectMessage     `json:"subject,omitempty"`
 	Attributes          map[string][]string `json:"attributes,omitempty"`
+	GroupFacts          []groupFactMessage  `json:"group_facts,omitempty"`
 	DirectoryStatus     string              `json:"directory_status"`
 }
 
@@ -125,6 +126,14 @@ type verifyErrorMessage struct {
 type subjectMessage struct {
 	DirectoryID string `json:"directory_id"`
 	Username    string `json:"username"`
+}
+
+type groupFactMessage struct {
+	ID      string `json:"id"`
+	DN      string `json:"dn"`
+	Display string `json:"display"`
+	Source  string `json:"source"`
+	Depth   int    `json:"depth"`
 }
 
 type errorPayload struct {
@@ -385,8 +394,26 @@ func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, 
 			Username:    result.Subject.Username,
 		}
 		response.Attributes = result.Attributes
+		response.GroupFacts = groupFactMessages(result.GroupFacts)
 	}
 	_ = c.writeJSON(ctx, conn, response)
+}
+
+func groupFactMessages(facts []directory.GroupFact) []groupFactMessage {
+	if len(facts) == 0 {
+		return nil
+	}
+	result := make([]groupFactMessage, 0, len(facts))
+	for _, fact := range facts {
+		result = append(result, groupFactMessage{
+			ID:      fact.ID,
+			DN:      fact.DN,
+			Display: fact.Display,
+			Source:  fact.Source,
+			Depth:   fact.Depth,
+		})
+	}
+	return result
 }
 
 func (c *Client) writeJSON(ctx context.Context, conn *websocket.Conn, value any) error {

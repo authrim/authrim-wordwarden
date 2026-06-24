@@ -74,6 +74,36 @@ development only.
 
 ## LDAP Lookup Modes
 
+## Directory Profiles
+
+Directory profiles provide safe defaults for common LDAP/AD schema differences.
+They can be overridden per deployment:
+
+```yaml
+ldap:
+  directory_profile:
+    name: "active_directory"
+    subject_attribute: "objectGUID"
+    identifier_attributes:
+      - sAMAccountName
+      - userPrincipalName
+      - mail
+    group_strategy: "ad_matching_rule"
+    status_normalization: "active_directory"
+    paged_search:
+      enabled: true
+      page_size: 500
+      max_entries: 5000
+      timeout_ms: 3000
+```
+
+Initial built-in profiles are `active_directory`, `openldap`, and `generic`.
+Active Directory defaults to `objectGUID` as the stable subject; OpenLDAP
+defaults to `entryUUID`. `generic` deployments should set
+`subject_attribute` explicitly when DN stability is not enough.
+Binary subject attributes such as AD `objectGUID` are normalized to base64url
+before they are returned as `subject.directory_id`.
+
 ## LDAP Transport and Endpoints
 
 Use `ldap.url` for one endpoint or `ldap.urls` for failover:
@@ -193,11 +223,14 @@ ldap:
     mode: "allowlist"
     allowed_urls:
       - "ldaps://ldap-referral.example.com:636"
+    allow_service_bind_reuse: true
 ```
 
-The current beta does not chase referrals automatically. A directory referral is normalized
-as `directory_referral` so operators can fix base DN, filters, or referral
-policy without silent cross-directory traversal.
+Referral chasing is disabled by default. When enabled, Wordwarden follows only a
+single hop to an allowlisted LDAP/LDAPS endpoint. TLS verification is still
+required, and service-bind credential reuse must be explicitly allowed with
+`allow_service_bind_reuse: true`. Further referrals are rejected as
+`directory_referral`.
 
 ## Attribute Release
 
@@ -210,8 +243,7 @@ Wordwarden does not perform role mapping in the current beta.
 
 ## Group Lookup Primitive
 
-Wordwarden can expose a raw group membership attribute as a connector fact. This
-is not role mapping.
+Wordwarden can expose group facts. This is not role mapping.
 
 ```yaml
 ldap:
@@ -222,12 +254,21 @@ ldap:
   groups:
     enabled: true
     member_attribute: "memberOf"
+    search_member_attribute: "member"
     response_attribute: "groups"
+    id_attribute: "cn"
+    display_attribute: "cn"
+    search_base_dn: "ou=Groups,dc=example,dc=edu"
+    max_depth: 2
+    max_groups: 100
+    timeout_ms: 1000
 ```
 
-When Authrim requests `groups`, Wordwarden reads `memberOf` and returns those
-values as `groups`. Authrim remains responsible for role mapping and final
-attribute release.
+When Authrim requests `groups`, Wordwarden returns legacy `attributes.groups`
+and structured `group_facts`. Group lookup strategy is controlled by
+`directory_profile.group_strategy`: `member_attribute_only`,
+`ad_matching_rule`, or `bfs_member_search`. Authrim remains responsible for role
+mapping and final attribute release.
 
 ## AD Status Normalization
 

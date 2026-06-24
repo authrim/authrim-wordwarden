@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -122,7 +123,7 @@ func (c Client) TestConnection(ctx context.Context, request directory.TestConnec
 		}
 		result.UserResolved = true
 		result.Subject = directory.Subject{
-			DirectoryID: user.dn,
+			DirectoryID: user.subjectID(),
 			Username:    processed.Value,
 		}
 
@@ -183,10 +184,11 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 
 		return directory.SuccessfulVerification(
 			directory.Subject{
-				DirectoryID: user.dn,
+				DirectoryID: user.subjectID(),
 				Username:    processed.Value,
 			},
 			user.attributes,
+			user.groupFacts,
 		), nil
 	case "dn_template":
 		userDN := c.userDNFromTemplate(processed.Value)
@@ -227,13 +229,14 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 		}
 		reusable = c.restoreServiceBindForReuse(ctx, conn) == nil
 
-      return directory.SuccessfulVerification(
-      directory.Subject{
-          DirectoryID: user.dn,
-          Username:    processed.Value,
-      },
-      user.attributes,
-  ), nil
+		return directory.SuccessfulVerification(
+			directory.Subject{
+				DirectoryID: user.subjectID(),
+				Username:    processed.Value,
+			},
+			user.attributes,
+			user.groupFacts,
+		), nil
 	default:
 		return directory.VerifyPasswordResult{}, fmt.Errorf("unsupported ldap lookup_mode %q", c.config.LookupMode)
 	}
@@ -244,7 +247,7 @@ func (c Client) bindService(ctx context.Context, conn *ldap.Conn) error {
 		return err
 	}
 	if err := conn.Bind(c.config.BindDN, c.bindPassword); err != nil {
-		return normalizeLDAPError(err)
+		return c.normalizeLDAPError(err)
 	}
 	return nil
 }
@@ -257,7 +260,7 @@ func (c Client) bindUser(ctx context.Context, conn *ldap.Conn, bindName string, 
 		return err
 	}
 	if err := conn.Bind(bindName, password); err != nil {
-		return normalizeLDAPError(err)
+		return c.normalizeLDAPError(err)
 	}
 	return nil
 }
@@ -344,9 +347,9 @@ func (c Client) resolveAttributesByDN(ctx context.Context, conn *ldap.Conn, dn s
 		nil,
 	)
 
-	result, err := conn.Search(searchRequest)
+	result, err := c.search(ctx, conn, searchRequest)
 	if err != nil {
-		return nil, normalizeLDAPError(err)
+		return nil, c.normalizeLDAPError(err)
 	}
 	if len(result.Entries) == 0 {
 		return nil, directory.ErrUserNotFound
@@ -467,7 +470,7 @@ func (c Client) dialEndpoint(ctx context.Context, endpoint string, allowInsecure
 		}
 		if err := conn.StartTLS(tlsConfig); err != nil {
 			conn.Close()
-			return nil, normalizeLDAPError(err)
+			return nil, c.normalizeLDAPError(err)
 		}
 		return conn, nil
 	}
@@ -518,17 +521,199 @@ func (c Client) tlsConfig(endpoint string, allowInsecure bool) (*tls.Config, err
 	return tlsConfig, nil
 }
 
+func (c Client) search(ctx context.Context, conn *ldap.Conn, request *ldap.SearchRequest) (*ldap.SearchResult, error) {
+	result, err := c.searchOnce(ctx, conn, request)
+	if err != nil {
+		return result, err
+	}
+	if result == nil || len(result.Referrals) == 0 {
+		return result, nil
+	}
+	if c.config.Referrals.Mode != "allowlist" || !c.config.Referrals.AllowServiceBindReuse {
+		return nil, directory.ErrDirectoryReferral
+	}
+
+	followed, err := c.followReferrals(ctx, request, result.Referrals)
+	if err != nil {
+		return nil, err
+	}
+	result.Entries = append(result.Entries, followed.Entries...)
+	result.Referrals = append(result.Referrals, followed.Referrals...)
+	return result, nil
+}
+
+func (c Client) searchOnce(ctx context.Context, conn *ldap.Conn, request *ldap.SearchRequest) (*ldap.SearchResult, error) {
+	if !c.config.DirectoryProfile.PagedSearch.Enabled {
+		return conn.Search(request)
+	}
+
+	paged := c.config.DirectoryProfile.PagedSearch
+	timeout, err := timeoutWithinContext(ctx, paged.TimeoutMS, time.Duration(paged.TimeoutMS)*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	if timeout < time.Millisecond {
+		timeout = time.Millisecond
+	}
+	request.TimeLimit = ldapTimeLimitSeconds(timeout)
+
+	return c.searchWithPagingLimit(conn, request, uint32(paged.PageSize), paged.MaxEntries)
+}
+
+func (c Client) searchWithPagingLimit(conn *ldap.Conn, request *ldap.SearchRequest, pageSize uint32, maxEntries int) (*ldap.SearchResult, error) {
+	if maxEntries <= 0 {
+		return nil, fmt.Errorf("%w: paged search max_entries must be positive", directory.ErrDirectoryUnavailable)
+	}
+	pagingControl := ldap.NewControlPaging(pageSize)
+	request.Controls = append(withoutPagingControl(request.Controls), pagingControl)
+	combined := &ldap.SearchResult{}
+
+	for {
+		result, err := conn.Search(request)
+		if result != nil {
+			combined.Entries = append(combined.Entries, result.Entries...)
+			combined.Referrals = append(combined.Referrals, result.Referrals...)
+			combined.Controls = append(combined.Controls, result.Controls...)
+			if len(combined.Entries) > maxEntries {
+				combined.Entries = combined.Entries[:maxEntries]
+				return combined, fmt.Errorf("%w: paged search exceeded max_entries", directory.ErrDirectoryUnavailable)
+			}
+		}
+		if err != nil {
+			return combined, err
+		}
+		if result == nil {
+			return combined, fmt.Errorf("%w: ldap search returned no result", directory.ErrDirectoryUnavailable)
+		}
+		control := ldap.FindControl(result.Controls, ldap.ControlTypePaging)
+		if control == nil {
+			return combined, nil
+		}
+		pagingResult, ok := control.(*ldap.ControlPaging)
+		if !ok || len(pagingResult.Cookie) == 0 {
+			return combined, nil
+		}
+		pagingControl.SetCookie(pagingResult.Cookie)
+	}
+}
+
+func withoutPagingControl(controls []ldap.Control) []ldap.Control {
+	if len(controls) == 0 {
+		return nil
+	}
+	result := make([]ldap.Control, 0, len(controls))
+	for _, control := range controls {
+		if control.GetControlType() == ldap.ControlTypePaging {
+			continue
+		}
+		result = append(result, control)
+	}
+	return result
+}
+
+func (c Client) followReferrals(ctx context.Context, original *ldap.SearchRequest, referrals []string) (*ldap.SearchResult, error) {
+	combined := &ldap.SearchResult{}
+	for _, referral := range referrals {
+		endpoint, baseDN, ok := c.allowedReferral(referral)
+		if !ok {
+			return nil, directory.ErrDirectoryReferral
+		}
+		conn, err := c.dialEndpoint(ctx, endpoint, false)
+		if err != nil {
+			return nil, err
+		}
+		func() {
+			defer conn.Close()
+			if err = c.bindService(ctx, conn); err != nil {
+				return
+			}
+			request := cloneSearchRequest(original)
+			if baseDN != "" {
+				request.BaseDN = baseDN
+			}
+			var result *ldap.SearchResult
+			result, err = c.searchOnce(ctx, conn, request)
+			if result != nil {
+				combined.Entries = append(combined.Entries, result.Entries...)
+				combined.Referrals = append(combined.Referrals, result.Referrals...)
+				combined.Controls = append(combined.Controls, result.Controls...)
+			}
+		}()
+		if err != nil {
+			return nil, err
+		}
+		if len(combined.Referrals) > 0 {
+			return nil, directory.ErrDirectoryReferral
+		}
+	}
+	return combined, nil
+}
+
+func cloneSearchRequest(request *ldap.SearchRequest) *ldap.SearchRequest {
+	attrs := append([]string(nil), request.Attributes...)
+	controls := append([]ldap.Control(nil), request.Controls...)
+	return ldap.NewSearchRequest(
+		request.BaseDN,
+		request.Scope,
+		request.DerefAliases,
+		request.SizeLimit,
+		request.TimeLimit,
+		request.TypesOnly,
+		request.Filter,
+		attrs,
+		controls,
+	)
+}
+
+func (c Client) allowedReferral(raw string) (endpoint string, baseDN string, ok bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "", "", false
+	}
+	refEndpoint := referralEndpoint(parsed)
+	for _, allowed := range c.config.Referrals.AllowedURLs {
+		allowedParsed, err := url.Parse(allowed)
+		if err != nil || allowedParsed.Host == "" {
+			continue
+		}
+		if referralEndpoint(allowedParsed) == refEndpoint {
+			base := strings.TrimPrefix(parsed.EscapedPath(), "/")
+			if base != "" {
+				if unescaped, err := url.PathUnescape(base); err == nil {
+					base = unescaped
+				}
+			}
+			return refEndpoint, base, true
+		}
+	}
+	return "", "", false
+}
+
+func referralEndpoint(parsed *url.URL) string {
+	host := strings.ToLower(parsed.Host)
+	return parsed.Scheme + "://" + host
+}
+
 func (c Client) resolveUser(ctx context.Context, conn *ldap.Conn, username string) (string, error) {
 	user, err := c.resolveUserWithAttributes(ctx, conn, username, []string{"dn"})
 	if err != nil {
 		return "", err
 	}
-	return user.dn, nil
+	return user.subjectID(), nil
 }
 
 type resolvedUser struct {
-	dn         string
-	attributes map[string][]string
+	dn           string
+	subjectValue string
+	attributes   map[string][]string
+	groupFacts   []directory.GroupFact
+}
+
+func (u resolvedUser) subjectID() string {
+	if u.subjectValue != "" {
+		return u.subjectValue
+	}
+	return u.dn
 }
 
 func (c Client) resolveUserWithAttributes(ctx context.Context, conn *ldap.Conn, username string, attributes []string) (resolvedUser, error) {
@@ -551,9 +736,9 @@ func (c Client) resolveUserWithAttributes(ctx context.Context, conn *ldap.Conn, 
 		nil,
 	)
 
-	result, err := conn.Search(searchRequest)
+	result, err := c.search(ctx, conn, searchRequest)
 	if err != nil {
-		return resolvedUser{}, normalizeLDAPError(err)
+		return resolvedUser{}, c.normalizeLDAPError(err)
 	}
 	entry, err := singleSearchEntry(result.Entries)
 	if err != nil {
@@ -561,8 +746,10 @@ func (c Client) resolveUserWithAttributes(ctx context.Context, conn *ldap.Conn, 
 	}
 
 	return resolvedUser{
-		dn:         entry.DN,
-		attributes: c.entryAttributes(entry, attributes),
+		dn:           entry.DN,
+		subjectValue: c.entrySubjectValue(entry),
+		attributes:   c.entryAttributes(entry, attributes),
+		groupFacts:   c.groupFacts(ctx, conn, entry, attributes),
 	}, nil
 }
 
@@ -604,6 +791,10 @@ func requestedAttributes(requested []string, allowed []string) []string {
 
 func (c Client) searchAttributes(requested []string) []string {
 	attrs := requestedAttributes(requested, c.config.Attributes)
+	if c.config.DirectoryProfile.SubjectAttribute != "" &&
+		!stringSliceContains(attrs, c.config.DirectoryProfile.SubjectAttribute) {
+		attrs = append(attrs, c.config.DirectoryProfile.SubjectAttribute)
+	}
 	if !c.config.Groups.Enabled || !requestedAttributeIncludes(requested, c.config.Groups.ResponseAttribute) {
 		return attrs
 	}
@@ -614,6 +805,50 @@ func (c Client) searchAttributes(requested []string) []string {
 		return attrs
 	}
 	return append(attrs, c.config.Groups.MemberAttribute)
+}
+
+func (c Client) groupSearchAttributes() []string {
+	names := []string{c.config.Groups.IDAttribute, c.config.Groups.DisplayAttribute}
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result
+}
+
+func (c Client) entrySubjectValue(entry *ldap.Entry) string {
+	name := c.config.DirectoryProfile.SubjectAttribute
+	if name == "" {
+		return ""
+	}
+	for _, attr := range entry.Attributes {
+		if !strings.EqualFold(attr.Name, name) {
+			continue
+		}
+		if c.binarySubjectAttribute(name) && len(attr.ByteValues) > 0 {
+			return base64.RawURLEncoding.EncodeToString(attr.ByteValues[0])
+		}
+		if len(attr.Values) > 0 {
+			return attr.Values[0]
+		}
+		if len(attr.ByteValues) > 0 {
+			return base64.RawURLEncoding.EncodeToString(attr.ByteValues[0])
+		}
+	}
+	return ""
+}
+
+func (c Client) binarySubjectAttribute(name string) bool {
+	return c.config.DirectoryProfile.Name == "active_directory" &&
+		strings.EqualFold(name, "objectGUID")
 }
 
 func (c Client) entryAttributes(entry *ldap.Entry, requested []string) map[string][]string {
@@ -634,6 +869,165 @@ func (c Client) entryAttributes(entry *ldap.Entry, requested []string) map[strin
 	return attrs
 }
 
+func (c Client) groupFacts(ctx context.Context, conn *ldap.Conn, entry *ldap.Entry, requested []string) []directory.GroupFact {
+	if !c.config.Groups.Enabled || !requestedAttributeIncludes(requested, c.config.Groups.ResponseAttribute) {
+		return nil
+	}
+
+	switch c.config.DirectoryProfile.GroupStrategy {
+	case "ad_matching_rule":
+		return c.adMatchingRuleGroupFacts(ctx, conn, entry.DN)
+	case "bfs_member_search":
+		return c.bfsGroupFacts(ctx, conn, entry.DN)
+	default:
+		return c.memberAttributeGroupFacts(entry)
+	}
+}
+
+func (c Client) memberAttributeGroupFacts(entry *ldap.Entry) []directory.GroupFact {
+	values := entry.GetAttributeValues(c.config.Groups.MemberAttribute)
+	if len(values) == 0 {
+		return nil
+	}
+	facts := make([]directory.GroupFact, 0, len(values))
+	for _, dn := range values {
+		facts = append(facts, directory.GroupFact{
+			ID:      dn,
+			DN:      dn,
+			Display: dn,
+			Source:  c.config.Groups.MemberAttribute,
+			Depth:   1,
+		})
+	}
+	return facts
+}
+
+func (c Client) adMatchingRuleGroupFacts(ctx context.Context, conn *ldap.Conn, userDN string) []directory.GroupFact {
+	filter := fmt.Sprintf("(%s:1.2.840.113556.1.4.1941:=%s)",
+		c.config.Groups.SearchMemberAttribute,
+		ldap.EscapeFilter(userDN),
+	)
+	entries, err := c.searchGroupEntries(ctx, conn, filter)
+	if err != nil {
+		return nil
+	}
+	return c.groupFactsFromEntries(entries, "ad_matching_rule", 1)
+}
+
+func (c Client) bfsGroupFacts(ctx context.Context, conn *ldap.Conn, userDN string) []directory.GroupFact {
+	maxDepth := c.config.Groups.MaxDepth
+	maxGroups := c.config.Groups.MaxGroups
+	seen := map[string]struct{}{}
+	frontier := []string{userDN}
+	facts := make([]directory.GroupFact, 0)
+
+	for depth := 1; depth <= maxDepth && len(frontier) > 0 && len(facts) < maxGroups; depth++ {
+		next := make([]string, 0)
+		for _, memberDN := range frontier {
+			filter := fmt.Sprintf("(%s=%s)",
+				c.config.Groups.SearchMemberAttribute,
+				ldap.EscapeFilter(memberDN),
+			)
+			entries, err := c.searchGroupEntries(ctx, conn, filter)
+			if err != nil {
+				return facts
+			}
+			for _, entry := range entries {
+				if _, ok := seen[entry.DN]; ok {
+					continue
+				}
+				seen[entry.DN] = struct{}{}
+				facts = append(facts, c.groupFactFromEntry(entry, "bfs_member_search", depth))
+				if len(facts) >= maxGroups {
+					break
+				}
+				next = append(next, entry.DN)
+			}
+			if len(facts) >= maxGroups {
+				break
+			}
+		}
+		frontier = next
+	}
+
+	return facts
+}
+
+func (c Client) searchGroupEntries(ctx context.Context, conn *ldap.Conn, filter string) ([]*ldap.Entry, error) {
+	timeoutMS := c.config.Groups.TimeoutMS
+	if timeoutMS <= 0 {
+		timeoutMS = c.timeouts.LDAPSearchMS
+	}
+	timeout, err := c.setOperationTimeout(ctx, conn, timeoutMS, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	baseDN := c.config.Groups.SearchBaseDN
+	if baseDN == "" {
+		baseDN = c.config.BaseDN
+	}
+	searchRequest := ldap.NewSearchRequest(
+		baseDN,
+		ldap.ScopeWholeSubtree,
+		ldap.NeverDerefAliases,
+		c.config.Groups.MaxGroups,
+		ldapTimeLimitSeconds(timeout),
+		false,
+		filter,
+		c.groupSearchAttributes(),
+		nil,
+	)
+	result, err := c.search(ctx, conn, searchRequest)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Entries) > c.config.Groups.MaxGroups {
+		return result.Entries[:c.config.Groups.MaxGroups], nil
+	}
+	return result.Entries, nil
+}
+
+func (c Client) groupFactsFromEntries(entries []*ldap.Entry, source string, depth int) []directory.GroupFact {
+	limit := c.config.Groups.MaxGroups
+	if limit <= 0 || limit > len(entries) {
+		limit = len(entries)
+	}
+	facts := make([]directory.GroupFact, 0, limit)
+	for _, entry := range entries[:limit] {
+		facts = append(facts, c.groupFactFromEntry(entry, source, depth))
+	}
+	return facts
+}
+
+func (c Client) groupFactFromEntry(entry *ldap.Entry, source string, depth int) directory.GroupFact {
+	id := firstAttributeValue(entry, c.config.Groups.IDAttribute)
+	if id == "" {
+		id = entry.DN
+	}
+	display := firstAttributeValue(entry, c.config.Groups.DisplayAttribute)
+	if display == "" {
+		display = id
+	}
+	return directory.GroupFact{
+		ID:      id,
+		DN:      entry.DN,
+		Display: display,
+		Source:  source,
+		Depth:   depth,
+	}
+}
+
+func firstAttributeValue(entry *ldap.Entry, name string) string {
+	if name == "" {
+		return ""
+	}
+	values := entry.GetAttributeValues(name)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
 func requestedAttributeIncludes(requested []string, name string) bool {
 	if name == "" {
 		return false
@@ -650,10 +1044,17 @@ func stringSliceContains(values []string, needle string) bool {
 	return false
 }
 
-func normalizeLDAPError(err error) error {
+func (c Client) normalizeLDAPError(err error) error {
 	if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
-		if mapped, ok := normalizeADInvalidCredentialsError(err); ok {
-			return mapped
+		if c.config.DirectoryProfile.StatusNormalization == "active_directory" {
+			if mapped, ok := normalizeADInvalidCredentialsError(err); ok {
+				return mapped
+			}
+		}
+		if c.config.DirectoryProfile.StatusNormalization == "" && c.config.DirectoryProfile.Name == "active_directory" {
+			if mapped, ok := normalizeADInvalidCredentialsError(err); ok {
+				return mapped
+			}
 		}
 		return directory.ErrInvalidCredentials
 	}
@@ -664,6 +1065,12 @@ func normalizeLDAPError(err error) error {
 		return directory.ErrDirectoryReferral
 	}
 	return err
+}
+
+func normalizeLDAPError(err error) error {
+	return Client{config: config.LDAPConfig{
+		DirectoryProfile: config.DirectoryProfileConfig{StatusNormalization: "active_directory"},
+	}}.normalizeLDAPError(err)
 }
 
 func credentialVerdictFromBindError(err error) (directory.VerifyPasswordResult, bool) {

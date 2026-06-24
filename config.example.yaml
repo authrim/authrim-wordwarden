@@ -34,6 +34,16 @@ tenants:
         verify: true
         server_name: "ldap.example.com"
         ca_file_ref: "file:/etc/authrim-wordwarden/ca/ldap-ca.pem"
+      directory_profile:
+        name: "generic"
+        subject_attribute: "entryUUID"
+        group_strategy: "member_attribute_only"
+        status_normalization: "generic"
+        paged_search:
+          enabled: false
+          page_size: 500
+          max_entries: 5000
+          timeout_ms: 3000
       lookup_mode: "search_then_bind"
       username:
         allowed_formats:
@@ -61,6 +71,20 @@ tenants:
         - uid
         - mail
         - displayName
+      groups:
+        enabled: false
+        member_attribute: "memberOf"
+        search_member_attribute: "memberOf"
+        response_attribute: "groups"
+        id_attribute: "cn"
+        display_attribute: "cn"
+        max_depth: 1
+        max_groups: 100
+        timeout_ms: 1000
+      referrals:
+        mode: "disabled"
+        allowed_urls: []
+        allow_service_bind_reuse: false
     timeouts:
       ldap_connect_ms: 500
       ldap_bind_ms: 1500
