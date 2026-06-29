@@ -25,6 +25,7 @@ type heartbeatPayload struct {
 	DisplayName       string         `json:"display_name,omitempty"`
 	Transport         string         `json:"transport"`
 	Version           string         `json:"version"`
+	ReleaseChannel    string         `json:"release_channel"`
 	StartedAt         string         `json:"started_at"`
 	HealthStatus      string         `json:"health_status"`
 	HealthSummary     map[string]any `json:"health_summary,omitempty"`
@@ -135,6 +136,7 @@ func buildHeartbeatPayload(tenant config.TenantConfig, instanceID string, starte
 		DisplayName:       tenant.Authrim.Heartbeat.DisplayName,
 		Transport:         tenant.Authrim.Heartbeat.Transport,
 		Version:           version,
+		ReleaseChannel:    "stable",
 		StartedAt:         startedAt.UTC().Format(time.RFC3339),
 		HealthStatus:      "healthy",
 		HealthSummary:     map[string]any{"process": "ok"},

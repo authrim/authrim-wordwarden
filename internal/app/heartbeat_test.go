@@ -91,6 +91,9 @@ func TestHeartbeatClientSendsSignedHeartbeat(t *testing.T) {
 	if payload.InstanceID != "wwi_1234567890123456789012" || payload.DisplayName != "campus a" {
 		t.Fatalf("payload identity = %#v", payload)
 	}
+	if payload.ReleaseChannel != "stable" {
+		t.Fatalf("release channel = %q", payload.ReleaseChannel)
+	}
 	if !strings.HasPrefix(payload.ConfigFingerprint, "sha256:") {
 		t.Fatalf("fingerprint = %q", payload.ConfigFingerprint)
 	}

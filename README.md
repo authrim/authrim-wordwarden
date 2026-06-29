@@ -37,8 +37,10 @@ Current implementation slice:
 - connector storm protection for HMAC failures, malformed/replayed requests, and directory errors
 - outbound relay protocol version negotiation and tenant/connector URL binding
 - redacted diagnostics bundle, detailed health, and Prometheus-compatible counters
+- `wordwarden doctor` for local readiness checks without printing secrets
+- `wordwarden update check` for advisory-feed based signed update guidance
 - OpenLDAP integration fixture
-- CI for tests, example config validation, and Docker image build
+- CI for tests, example config validation, signed tarball artifacts, SBOM, and Docker image build
 
 The guarded OpenLDAP integration test is available under
 `test/integration/openldap`.
@@ -136,6 +138,8 @@ LDAP diagnostics:
 ```bash
 go run ./cmd/wordwarden --config config.example.yaml ldap test --tenant tenant-a
 go run ./cmd/wordwarden --config config.example.yaml diagnostics bundle
+go run ./cmd/wordwarden --config config.example.yaml doctor
+go run ./cmd/wordwarden update check --feed-url ./stable.json
 ```
 
 OpenLDAP integration fixture:

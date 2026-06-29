@@ -75,6 +75,7 @@ type authResponseMessage struct {
 	InstanceID          string   `json:"instance_id,omitempty"`
 	DisplayName         string   `json:"display_name,omitempty"`
 	Version             string   `json:"version,omitempty"`
+	ReleaseChannel      string   `json:"release_channel,omitempty"`
 	StartedAt           string   `json:"started_at,omitempty"`
 	ConfigFingerprint   string   `json:"config_fingerprint,omitempty"`
 	ConfigCategories    []string `json:"config_categories,omitempty"`
@@ -310,6 +311,7 @@ func (c *Client) authenticate(ctx context.Context, conn *websocket.Conn) error {
 		InstanceID:          c.config.InstanceID,
 		DisplayName:         c.config.DisplayName,
 		Version:             c.config.Version,
+		ReleaseChannel:      "stable",
 		StartedAt:           c.config.StartedAt.UTC().Format(time.RFC3339),
 		ConfigFingerprint:   c.config.ConfigFingerprint,
 		ConfigCategories:    append([]string(nil), c.config.ConfigCategories...),

@@ -28,7 +28,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.0-beta.1"
+var version = "0.1.0-beta.1"
 
 func Execute() error {
 	return NewRootCommand().Execute()
@@ -49,6 +49,8 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newConfigCommand(&configPath))
 	root.AddCommand(newLDAPCommand(&configPath))
 	root.AddCommand(newDiagnosticsCommand(&configPath))
+	root.AddCommand(newDoctorCommand(&configPath))
+	root.AddCommand(newUpdateCommand())
 	root.AddCommand(newVersionCommand())
 
 	return root
@@ -247,6 +249,69 @@ func newDiagnosticsCommand(configPath *string) *cobra.Command {
 	return diagnosticsCmd
 }
 
+func newDoctorCommand(configPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check local Wordwarden runtime readiness without printing secrets",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.LoadFile(*configPath)
+			if err != nil {
+				return err
+			}
+			report := buildDoctorReport(cfg)
+			for _, check := range report.Checks {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", check.Status, check.Name, check.Detail)
+			}
+			if report.HasFailures {
+				return errors.New("doctor found failed checks")
+			}
+			return nil
+		},
+	}
+}
+
+func newUpdateCommand() *cobra.Command {
+	var feedURL string
+	var currentVersion string
+	var channel string
+	var timeout time.Duration
+
+	updateCmd := &cobra.Command{
+		Use:   "update",
+		Short: "Check signed update guidance",
+	}
+
+	checkCmd := &cobra.Command{
+		Use:   "check",
+		Short: "Check release advisory feed without installing updates",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if feedURL == "" {
+				return errors.New("--feed-url is required")
+			}
+			feed, err := readAdvisoryFeed(cmd.Context(), feedURL, timeout)
+			if err != nil {
+				return err
+			}
+			if channel != "" && feed.Channel != "" && channel != feed.Channel {
+				return fmt.Errorf("feed channel %q does not match requested channel %q", feed.Channel, channel)
+			}
+			if currentVersion == "" {
+				currentVersion = version
+			}
+			result := evaluateUpdateFeed(feed, currentVersion)
+			printUpdateCheckResult(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+	checkCmd.Flags().StringVar(&feedURL, "feed-url", "", "Release advisory JSON feed URL or file path")
+	checkCmd.Flags().StringVar(&currentVersion, "current-version", version, "Current Wordwarden version")
+	checkCmd.Flags().StringVar(&channel, "channel", "stable", "Expected release channel")
+	checkCmd.Flags().DurationVar(&timeout, "timeout", 10*time.Second, "Feed fetch timeout")
+
+	updateCmd.AddCommand(checkCmd)
+	return updateCmd
+}
+
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -255,6 +320,240 @@ func newVersionCommand() *cobra.Command {
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), version)
 			return nil
 		},
+	}
+}
+
+type doctorReport struct {
+	Checks      []doctorCheck
+	HasFailures bool
+}
+
+type doctorCheck struct {
+	Name   string
+	Status string
+	Detail string
+}
+
+func buildDoctorReport(cfg *config.Config) doctorReport {
+	report := doctorReport{}
+	addDoctorCheck := func(name string, ok bool, detail string) {
+		status := "ok"
+		if !ok {
+			status = "fail"
+			report.HasFailures = true
+		}
+		report.Checks = append(report.Checks, doctorCheck{Name: name, Status: status, Detail: detail})
+	}
+	addDoctorWarning := func(name string, warn bool, detail string) {
+		status := "ok"
+		if warn {
+			status = "warn"
+		}
+		report.Checks = append(report.Checks, doctorCheck{Name: name, Status: status, Detail: detail})
+	}
+
+	addDoctorCheck("config.tenants", len(cfg.Tenants) > 0, fmt.Sprintf("%d tenant(s)", len(cfg.Tenants)))
+	addDoctorCheck("server.listen", cfg.Server.Listen != "", cfg.Server.Listen)
+	addDoctorWarning("server.state_dir", cfg.Server.StateDir == "", cfg.Server.StateDir)
+	addDoctorWarning("server.tls", !cfg.Server.TLS.Enabled, "TLS disabled; use only behind a trusted local proxy or tunnel")
+
+	for _, tenant := range cfg.Tenants {
+		prefix := "tenant." + tenant.TenantID + "."
+		addDoctorCheck(prefix+"connector_id", tenant.ConnectorID != "", tenant.ConnectorID)
+		addDoctorCheck(prefix+"hmac.active_kid", tenant.Authrim.HMACKeys.Active.KID != "", tenant.Authrim.HMACKeys.Active.KID)
+		addDoctorCheck(prefix+"hmac.active_secret_ref", isSecretRef(tenant.Authrim.HMACKeys.Active.SecretRef), "secret reference configured")
+		addDoctorCheck(prefix+"audit_hash_secret_ref", isSecretRef(tenant.Authrim.AuditHashSecretRef), "secret reference configured")
+		addDoctorWarning(prefix+"ldap.tls_verify", !tenant.LDAP.TLS.Verify, "LDAP TLS verification disabled")
+		addDoctorCheck(prefix+"ldap.endpoint", len(tenant.LDAP.URLs) > 0 || tenant.LDAP.URL != "", "LDAP endpoint configured")
+		if tenant.Authrim.Relay.Enabled {
+			addDoctorCheck(prefix+"relay.url", tenant.Authrim.Relay.URL != "", "relay enabled")
+		}
+		if tenant.Authrim.Heartbeat.Enabled {
+			addDoctorCheck(prefix+"heartbeat.key", isSecretRef(tenant.Authrim.Heartbeat.Key.SecretRef), "heartbeat key reference configured")
+		}
+	}
+	return report
+}
+
+func isSecretRef(value string) bool {
+	return strings.HasPrefix(value, "env:") || strings.HasPrefix(value, "file:")
+}
+
+type advisoryFeed struct {
+	Channel       string            `json:"channel"`
+	LatestVersion string            `json:"latest_version"`
+	ReleaseURL    string            `json:"release_url"`
+	Advisories    []releaseAdvisory `json:"advisories"`
+}
+
+type releaseAdvisory struct {
+	AdvisoryID       string   `json:"advisory_id"`
+	AffectedVersions []string `json:"affected_versions"`
+	FixedVersion     string   `json:"fixed_version"`
+	Severity         string   `json:"severity"`
+	Summary          string   `json:"summary"`
+	PublishedAt      string   `json:"published_at"`
+	UpdatedAt        string   `json:"updated_at"`
+	ReleaseURL       string   `json:"release_url"`
+}
+
+type updateCheckResult struct {
+	CurrentVersion     string
+	LatestVersion      string
+	ReleaseURL         string
+	UpdateAvailable    bool
+	AffectedAdvisories []releaseAdvisory
+}
+
+func readAdvisoryFeed(ctx context.Context, rawURL string, timeout time.Duration) (advisoryFeed, error) {
+	var data []byte
+	parsed, err := url.Parse(rawURL)
+	if err == nil && parsed.Scheme == "file" {
+		data, err = os.ReadFile(parsed.Path)
+	} else if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		httpClient := &http.Client{Timeout: timeout}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return advisoryFeed{}, err
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return advisoryFeed{}, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return advisoryFeed{}, fmt.Errorf("release advisory feed returned HTTP %d", resp.StatusCode)
+		}
+		data, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	} else {
+		data, err = os.ReadFile(rawURL)
+	}
+	if err != nil {
+		return advisoryFeed{}, err
+	}
+
+	var feed advisoryFeed
+	if err := json.Unmarshal(data, &feed); err != nil {
+		return advisoryFeed{}, err
+	}
+	return feed, nil
+}
+
+func evaluateUpdateFeed(feed advisoryFeed, current string) updateCheckResult {
+	result := updateCheckResult{
+		CurrentVersion: current,
+		LatestVersion:  feed.LatestVersion,
+		ReleaseURL:     feed.ReleaseURL,
+	}
+	result.UpdateAvailable = normalizeVersion(feed.LatestVersion) != "" &&
+		normalizeVersion(feed.LatestVersion) != normalizeVersion(current)
+	for _, advisory := range feed.Advisories {
+		if advisoryAffectsVersion(advisory, current) {
+			result.AffectedAdvisories = append(result.AffectedAdvisories, advisory)
+		}
+	}
+	return result
+}
+
+func advisoryAffectsVersion(advisory releaseAdvisory, current string) bool {
+	normalizedCurrent := normalizeVersion(current)
+	for _, affected := range advisory.AffectedVersions {
+		if advisoryVersionMatches(affected, normalizedCurrent) {
+			return true
+		}
+	}
+	return false
+}
+
+func advisoryVersionMatches(candidate string, normalizedCurrent string) bool {
+	normalizedCandidate := normalizeVersion(candidate)
+	if normalizedCandidate == "" {
+		return false
+	}
+	if normalizedCandidate == "*" || normalizedCandidate == normalizedCurrent {
+		return true
+	}
+	for _, operator := range []string{"<=", ">=", "<", ">"} {
+		if strings.HasPrefix(normalizedCandidate, operator) {
+			expected := normalizeVersion(strings.TrimPrefix(normalizedCandidate, operator))
+			compared := compareVersions(normalizedCurrent, expected)
+			switch operator {
+			case "<=":
+				return compared <= 0
+			case ">=":
+				return compared >= 0
+			case "<":
+				return compared < 0
+			case ">":
+				return compared > 0
+			}
+		}
+	}
+	if strings.HasSuffix(normalizedCandidate, ".*") {
+		return strings.HasPrefix(normalizedCurrent, strings.TrimSuffix(normalizedCandidate, "*"))
+	}
+	return false
+}
+
+func normalizeVersion(value string) string {
+	return strings.TrimPrefix(strings.TrimSpace(value), "v")
+}
+
+func compareVersions(left string, right string) int {
+	leftParts := versionParts(left)
+	rightParts := versionParts(right)
+	maxLen := len(leftParts)
+	if len(rightParts) > maxLen {
+		maxLen = len(rightParts)
+	}
+	for i := 0; i < maxLen; i++ {
+		leftValue := 0
+		rightValue := 0
+		if i < len(leftParts) {
+			leftValue = leftParts[i]
+		}
+		if i < len(rightParts) {
+			rightValue = rightParts[i]
+		}
+		if leftValue < rightValue {
+			return -1
+		}
+		if leftValue > rightValue {
+			return 1
+		}
+	}
+	return 0
+}
+
+func versionParts(value string) []int {
+	core := strings.SplitN(value, "-", 2)[0]
+	parts := strings.Split(core, ".")
+	result := make([]int, 0, len(parts))
+	for _, part := range parts {
+		var parsed int
+		_, _ = fmt.Sscanf(part, "%d", &parsed)
+		result = append(result, parsed)
+	}
+	return result
+}
+
+func printUpdateCheckResult(writer io.Writer, result updateCheckResult) {
+	_, _ = fmt.Fprintf(writer, "current_version=%s\n", result.CurrentVersion)
+	_, _ = fmt.Fprintf(writer, "latest_version=%s\n", result.LatestVersion)
+	_, _ = fmt.Fprintf(writer, "update_available=%t\n", result.UpdateAvailable)
+	_, _ = fmt.Fprintf(writer, "security_advisories=%d\n", len(result.AffectedAdvisories))
+	for _, advisory := range result.AffectedAdvisories {
+		_, _ = fmt.Fprintf(
+			writer,
+			"advisory=%s severity=%s fixed_version=%s summary=%q\n",
+			advisory.AdvisoryID,
+			advisory.Severity,
+			advisory.FixedVersion,
+			advisory.Summary,
+		)
+	}
+	if result.ReleaseURL != "" {
+		_, _ = fmt.Fprintf(writer, "release_url=%s\n", result.ReleaseURL)
 	}
 }
 
