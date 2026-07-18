@@ -12,8 +12,8 @@ services:
       LDAP_TLS_KEY_FILENAME: "ldap.key"
       LDAP_TLS_CA_CRT_FILENAME: "ca.crt"
     ports:
-      - "1389:389"
-      - "1636:636"
+      - "127.0.0.1:1389:389"
+      - "127.0.0.1:1636:636"
     volumes:
       - "./certs:/container/service/slapd/assets/certs:ro"
       - "./ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom:ro"

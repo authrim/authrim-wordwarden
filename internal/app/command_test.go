@@ -2,10 +2,15 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testConfig = `
@@ -103,6 +108,7 @@ func TestUpdateCheckCommandReportsAffectedAdvisories(t *testing.T) {
 		feedPath,
 		"--current-version",
 		"0.1.0-beta.1",
+		"--allow-unsigned-feed",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -120,4 +126,154 @@ func TestUpdateCheckCommandReportsAffectedAdvisories(t *testing.T) {
 			t.Fatalf("update check output = %q, want %q", text, want)
 		}
 	}
+}
+
+func TestUpdateCheckRequiresSignedFeedByDefault(t *testing.T) {
+	dir := t.TempDir()
+	feedPath := filepath.Join(dir, "stable.json")
+	if err := os.WriteFile(feedPath, []byte(`{"channel":"stable","latest_version":"0.1.0-beta.2","advisories":[]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"update", "check", "--feed-url", feedPath})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want trusted key requirement")
+	}
+	if !strings.Contains(err.Error(), "--trusted-feed-key is required") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+func TestUpdateCheckRejectsHTTPFeedURL(t *testing.T) {
+	_, err := readAdvisoryFeed(contextWithTestTimeout(t), "http://updates.example.com/stable.json", time.Second)
+	if err == nil {
+		t.Fatal("readAdvisoryFeed() error = nil, want HTTPS requirement")
+	}
+	if !strings.Contains(err.Error(), "must use https://") {
+		t.Fatalf("readAdvisoryFeed() error = %v", err)
+	}
+}
+
+func TestUpdateCheckRejectsRemoteUnsignedFeed(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"update",
+		"check",
+		"--feed-url",
+		"https://updates.example.com/stable.json",
+		"--allow-unsigned-feed",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want local-only unsigned feed requirement")
+	}
+	if !strings.Contains(err.Error(), "local file feeds") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+func TestUpdateCheckAcceptsSignedFeedWithTrustedKey(t *testing.T) {
+	dir := t.TempDir()
+	feedPath := filepath.Join(dir, "stable.json")
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	feed := advisoryFeed{
+		Channel:       "stable",
+		LatestVersion: "0.1.0-beta.2",
+		ReleaseURL:    "https://github.com/authrim/authrim-wordwarden/releases/tag/v0.1.0-beta.2",
+		Advisories: []releaseAdvisory{{
+			AdvisoryID:       "WW-2026-0001",
+			AffectedVersions: []string{"<0.2.0"},
+			FixedVersion:     "0.1.0-beta.2",
+			Severity:         "high",
+			Summary:          "Test advisory",
+		}},
+	}
+	payload, err := json.Marshal(feed)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	feed.Signature = &advisoryFeedSignature{
+		Algorithm: "ed25519",
+		KeyID:     "test-key",
+		Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload)),
+	}
+	data, err := json.Marshal(feed)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(feedPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := NewRootCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"update",
+		"check",
+		"--feed-url",
+		feedPath,
+		"--trusted-feed-key",
+		base64.RawURLEncoding.EncodeToString(publicKey),
+		"--current-version",
+		"0.1.0-beta.1",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "update_available=true") {
+		t.Fatalf("update check output = %q", out.String())
+	}
+}
+
+func TestVerifyAdvisoryFeedSignature(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	feed := advisoryFeed{
+		Channel:       "stable",
+		LatestVersion: "0.1.0-beta.2",
+		ReleaseURL:    "https://github.com/authrim/authrim-wordwarden/releases/tag/v0.1.0-beta.2",
+		Advisories: []releaseAdvisory{{
+			AdvisoryID:       "WW-2026-0001",
+			AffectedVersions: []string{"<0.2.0"},
+			FixedVersion:     "0.1.0-beta.2",
+			Severity:         "high",
+			Summary:          "Test advisory",
+		}},
+	}
+	payload, err := json.Marshal(feed)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	feed.Signature = &advisoryFeedSignature{
+		Algorithm: "ed25519",
+		KeyID:     "test-key",
+		Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload)),
+	}
+
+	trustedKey := base64.RawURLEncoding.EncodeToString(publicKey)
+	if err := verifyAdvisoryFeedTrust(feed, trustedKey, false); err != nil {
+		t.Fatalf("verifyAdvisoryFeedTrust() error = %v", err)
+	}
+
+	feed.LatestVersion = "0.1.0-beta.3"
+	if err := verifyAdvisoryFeedTrust(feed, trustedKey, false); err == nil {
+		t.Fatal("verifyAdvisoryFeedTrust() error = nil, want tamper detection")
+	}
+}
+
+func contextWithTestTimeout(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }

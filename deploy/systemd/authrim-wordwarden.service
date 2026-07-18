@@ -12,6 +12,7 @@ EnvironmentFile=/etc/authrim-wordwarden/wordwarden.env
 ExecStart=/usr/local/bin/wordwarden --config /etc/authrim-wordwarden/config.yaml serve
 Restart=on-failure
 RestartSec=5s
+StateDirectory=authrim-wordwarden
 
 CapabilityBoundingSet=
 LockPersonality=true
@@ -27,6 +28,7 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
 ReadOnlyPaths=/etc/authrim-wordwarden
+ReadWritePaths=/var/lib/authrim-wordwarden
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 RestrictRealtime=true

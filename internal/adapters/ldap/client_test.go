@@ -243,6 +243,35 @@ func TestAllowedReferralRequiresAllowlistedEndpoint(t *testing.T) {
 	}
 }
 
+func TestAllowedReferralEnforcesConfiguredTLSScheme(t *testing.T) {
+	ldapsClient := NewClient(config.LDAPConfig{
+		Referrals: config.ReferralConfig{
+			Mode:        "allowlist",
+			AllowedURLs: []string{"ldap://ldap-referral.example.com:389", "ldaps://secure-referral.example.com:636"},
+		},
+	}, "", config.TimeoutConfig{})
+	if _, _, ok := ldapsClient.allowedReferral("ldap://ldap-referral.example.com:389/ou=People,dc=example,dc=com"); ok {
+		t.Fatal("allowedReferral() allowed plain LDAP referral without StartTLS")
+	}
+	if _, _, ok := ldapsClient.allowedReferral("ldaps://secure-referral.example.com:636/ou=People,dc=example,dc=com"); !ok {
+		t.Fatal("allowedReferral() rejected LDAPS referral without StartTLS")
+	}
+
+	startTLSClient := NewClient(config.LDAPConfig{
+		TLS: config.LDAPTLSConfig{StartTLS: true},
+		Referrals: config.ReferralConfig{
+			Mode:        "allowlist",
+			AllowedURLs: []string{"ldap://ldap-referral.example.com:389", "ldaps://secure-referral.example.com:636"},
+		},
+	}, "", config.TimeoutConfig{})
+	if _, _, ok := startTLSClient.allowedReferral("ldap://ldap-referral.example.com:389/ou=People,dc=example,dc=com"); !ok {
+		t.Fatal("allowedReferral() rejected plain LDAP referral when StartTLS is enabled")
+	}
+	if _, _, ok := startTLSClient.allowedReferral("ldaps://secure-referral.example.com:636/ou=People,dc=example,dc=com"); ok {
+		t.Fatal("allowedReferral() allowed LDAPS referral when StartTLS is enabled")
+	}
+}
+
 func TestBindUserRejectsEmptyPasswordBeforeLDAPBind(t *testing.T) {
 	client := NewClient(config.LDAPConfig{}, "", config.TimeoutConfig{})
 
@@ -358,6 +387,21 @@ func TestSingleSearchEntryRejectsAmbiguousResults(t *testing.T) {
 	})
 	if !errors.Is(err, directory.ErrAmbiguousUser) {
 		t.Fatalf("singleSearchEntry() error = %v, want %v", err, directory.ErrAmbiguousUser)
+	}
+}
+
+func TestUserResolutionFailuresAreCredentialFailures(t *testing.T) {
+	for _, err := range []error{directory.ErrUserNotFound, directory.ErrAmbiguousUser} {
+		result, ok := userResolutionFailureResult(err)
+		if !ok {
+			t.Fatalf("userResolutionFailureResult(%v) ok = false", err)
+		}
+		if result.CredentialResult() != directory.CredentialResultFailure || result.SafeReason() != directory.ReasonInvalidCredentials {
+			t.Fatalf("userResolutionFailureResult(%v) = %#v", err, result)
+		}
+	}
+	if _, ok := userResolutionFailureResult(directory.ErrDirectoryUnavailable); ok {
+		t.Fatal("directory unavailable must remain operational error")
 	}
 }
 

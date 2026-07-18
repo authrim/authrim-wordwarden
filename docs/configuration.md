@@ -260,10 +260,12 @@ ldap:
 ```
 
 Referral chasing is disabled by default. When enabled, Wordwarden follows only a
-single hop to an allowlisted LDAP/LDAPS endpoint. TLS verification is still
-required, and service-bind credential reuse must be explicitly allowed with
-`allow_service_bind_reuse: true`. Further referrals are rejected as
-`directory_referral`.
+single hop to an allowlisted endpoint. Use `ldaps://` referral URLs for normal
+LDAPS deployments. Use `ldap://` referral URLs only when `ldap.tls.start_tls: true`
+is configured, so the referral bind is upgraded with StartTLS before service-bind
+credential reuse. TLS verification is still required, and service-bind credential
+reuse must be explicitly allowed with `allow_service_bind_reuse: true`. Further
+referrals are rejected as `directory_referral`.
 
 ## Attribute Release
 

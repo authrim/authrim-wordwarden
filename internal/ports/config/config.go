@@ -563,7 +563,7 @@ func validateLDAP(problems *[]string, prefix string, ldap LDAPConfig) {
 		*problems = append(*problems, prefix+".tls.verify must be true")
 	}
 	validateFileRef(problems, prefix+".tls.ca_file_ref", ldap.TLS.CAFileRef, false)
-	validateReferrals(problems, prefix+".referrals", ldap.Referrals)
+	validateReferrals(problems, prefix+".referrals", ldap.Referrals, ldap.TLS.StartTLS)
 	validateGroups(problems, prefix+".groups", ldap.Groups)
 	validatePool(problems, prefix+".pool", ldap.Pool)
 
@@ -717,7 +717,7 @@ func ldapEndpointURLs(ldap LDAPConfig) []string {
 	return result
 }
 
-func validateReferrals(problems *[]string, prefix string, referrals ReferralConfig) {
+func validateReferrals(problems *[]string, prefix string, referrals ReferralConfig, startTLS bool) {
 	switch referrals.Mode {
 	case "disabled":
 		if len(referrals.AllowedURLs) > 0 {
@@ -743,6 +743,16 @@ func validateReferrals(problems *[]string, prefix string, referrals ReferralConf
 			}
 			if parsed.Scheme != "ldap" && parsed.Scheme != "ldaps" {
 				*problems = append(*problems, field+" must use ldap:// or ldaps://")
+				continue
+			}
+			if startTLS {
+				if parsed.Scheme != "ldap" {
+					*problems = append(*problems, field+" must use ldap:// when tls.start_tls is true")
+				}
+				continue
+			}
+			if parsed.Scheme != "ldaps" {
+				*problems = append(*problems, field+" must use ldaps:// unless tls.start_tls is true")
 			}
 		}
 	default:

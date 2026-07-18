@@ -139,7 +139,11 @@ LDAP diagnostics:
 go run ./cmd/wordwarden --config config.example.yaml ldap test --tenant tenant-a
 go run ./cmd/wordwarden --config config.example.yaml diagnostics bundle
 go run ./cmd/wordwarden --config config.example.yaml doctor
-go run ./cmd/wordwarden update check --feed-url ./stable.json
+go run ./cmd/wordwarden update check \
+  --feed-url ./stable.json \
+  --trusted-feed-key <base64url-ed25519-public-key>
+# Local unsigned fixture only:
+go run ./cmd/wordwarden update check --feed-url ./stable.json --allow-unsigned-feed
 ```
 
 OpenLDAP integration fixture:

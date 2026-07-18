@@ -73,6 +73,7 @@ docker compose -f deploy/docker-compose/local-demo/compose.yaml down -v
 
 - OpenLDAP is published on `127.0.0.1:1389` and `127.0.0.1:1636`.
 - Wordwarden is published on `127.0.0.1:8080`.
+- Wordwarden stores its demo `instance_id` under the local `./state` volume.
 - The OpenLDAP fixture disables client certificate verification with
   `LDAP_TLS_VERIFY_CLIENT=never`; server certificate verification from
   Wordwarden to LDAP remains enabled.

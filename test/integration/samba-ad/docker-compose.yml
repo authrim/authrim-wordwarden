@@ -12,8 +12,8 @@ services:
       SAMBA_HOST_IP: 127.0.0.1
       SAMBA_DNS_FORWARDER: 1.1.1.1
     ports:
-      - "1390:389"
-      - "1637:636"
+      - "127.0.0.1:1390:389"
+      - "127.0.0.1:1637:636"
     healthcheck:
       test: ["CMD-SHELL", "ldbsearch -H /var/lib/samba/private/sam.ldb -b DC=example,DC=test '(sAMAccountName=alice)' sAMAccountName >/dev/null"]
       interval: 10s

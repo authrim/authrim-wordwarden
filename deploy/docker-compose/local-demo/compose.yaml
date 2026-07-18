@@ -31,6 +31,7 @@ services:
     volumes:
       - "./config.yaml:/etc/authrim-wordwarden/config.yaml:ro"
       - "../../../test/integration/openldap/certs:/etc/authrim-wordwarden/ca:ro"
+      - "./state:/var/lib/authrim-wordwarden"
     read_only: true
     tmpfs:
       - /tmp

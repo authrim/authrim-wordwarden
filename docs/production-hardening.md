@@ -84,7 +84,9 @@ correlation boundary change and record the rotation time in the operations log.
 
 ## High Availability Guidance
 
-Wordwarden is stateless except for in-memory replay and storm-protection state.
+Wordwarden keeps an immutable connector `instance_id` in `server.state_dir` and
+keeps replay and storm-protection state in memory. Mount `server.state_dir` on
+persistent writable storage, even when the rest of the filesystem is read-only.
 Run multiple instances only when Authrim or the ingress can route requests
 consistently enough for the replay window you require.
 

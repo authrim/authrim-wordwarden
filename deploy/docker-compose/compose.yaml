@@ -10,6 +10,7 @@ services:
       - ./config.yaml:/etc/authrim-wordwarden/config.yaml:ro
       - ./ca:/etc/authrim-wordwarden/ca:ro
       - ./secrets:/etc/authrim-wordwarden/secrets:ro
+      - ./state:/var/lib/authrim-wordwarden
     read_only: true
     tmpfs:
       - /tmp

@@ -271,6 +271,60 @@ func TestParseRejectsReferralAllowlistUnsupportedScheme(t *testing.T) {
 	}
 }
 
+func TestParseRejectsPlainLDAPReferralWithoutStartTLS(t *testing.T) {
+	raw := validConfig + `
+      referrals:
+        mode: "allowlist"
+        allowed_urls:
+          - "ldap://ldap-referral.example.com:389"
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want plain LDAP referral validation error")
+	}
+	if !strings.Contains(err.Error(), "referrals.allowed_urls[0] must use ldaps:// unless tls.start_tls is true") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseAllowsPlainLDAPReferralWithStartTLS(t *testing.T) {
+	raw := strings.Replace(validConfig, `url: "ldaps://ldap.example.com:636"`, `url: "ldap://ldap.example.com:389"`, 1)
+	raw = strings.Replace(raw, `server_name: "ldap.example.com"`, `server_name: "ldap.example.com"
+        start_tls: true`, 1)
+	raw += `
+      referrals:
+        mode: "allowlist"
+        allowed_urls:
+          - "ldap://ldap-referral.example.com:389"
+`
+
+	_, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
+func TestParseRejectsLDAPSReferralWithStartTLS(t *testing.T) {
+	raw := strings.Replace(validConfig, `url: "ldaps://ldap.example.com:636"`, `url: "ldap://ldap.example.com:389"`, 1)
+	raw = strings.Replace(raw, `server_name: "ldap.example.com"`, `server_name: "ldap.example.com"
+        start_tls: true`, 1)
+	raw += `
+      referrals:
+        mode: "allowlist"
+        allowed_urls:
+          - "ldaps://ldap-referral.example.com:636"
+`
+
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want StartTLS referral scheme validation error")
+	}
+	if !strings.Contains(err.Error(), "referrals.allowed_urls[0] must use ldap:// when tls.start_tls is true") {
+		t.Fatalf("Parse() error = %v", err)
+	}
+}
+
 func TestParseAllowsGroupPrimitive(t *testing.T) {
 	raw := validConfig + `
       groups:

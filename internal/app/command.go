@@ -3,6 +3,8 @@ package app
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,6 +277,8 @@ func newUpdateCommand() *cobra.Command {
 	var currentVersion string
 	var channel string
 	var timeout time.Duration
+	var trustedFeedKey string
+	var allowUnsignedFeed bool
 
 	updateCmd := &cobra.Command{
 		Use:   "update",
@@ -288,8 +292,14 @@ func newUpdateCommand() *cobra.Command {
 			if feedURL == "" {
 				return errors.New("--feed-url is required")
 			}
+			if allowUnsignedFeed && !isLocalAdvisoryFeedURL(feedURL) {
+				return errors.New("--allow-unsigned-feed is only supported for local file feeds")
+			}
 			feed, err := readAdvisoryFeed(cmd.Context(), feedURL, timeout)
 			if err != nil {
+				return err
+			}
+			if err := verifyAdvisoryFeedTrust(feed, trustedFeedKey, allowUnsignedFeed); err != nil {
 				return err
 			}
 			if channel != "" && feed.Channel != "" && channel != feed.Channel {
@@ -307,6 +317,8 @@ func newUpdateCommand() *cobra.Command {
 	checkCmd.Flags().StringVar(&currentVersion, "current-version", version, "Current Wordwarden version")
 	checkCmd.Flags().StringVar(&channel, "channel", "stable", "Expected release channel")
 	checkCmd.Flags().DurationVar(&timeout, "timeout", 10*time.Second, "Feed fetch timeout")
+	checkCmd.Flags().StringVar(&trustedFeedKey, "trusted-feed-key", "", "Base64 or base64url Ed25519 public key for signed advisory feeds")
+	checkCmd.Flags().BoolVar(&allowUnsignedFeed, "allow-unsigned-feed", false, "Allow unsigned local file advisory feeds for testing only")
 
 	updateCmd.AddCommand(checkCmd)
 	return updateCmd
@@ -380,10 +392,17 @@ func isSecretRef(value string) bool {
 }
 
 type advisoryFeed struct {
-	Channel       string            `json:"channel"`
-	LatestVersion string            `json:"latest_version"`
-	ReleaseURL    string            `json:"release_url"`
-	Advisories    []releaseAdvisory `json:"advisories"`
+	Channel       string                 `json:"channel"`
+	LatestVersion string                 `json:"latest_version"`
+	ReleaseURL    string                 `json:"release_url"`
+	Advisories    []releaseAdvisory      `json:"advisories"`
+	Signature     *advisoryFeedSignature `json:"signature,omitempty"`
+}
+
+type advisoryFeedSignature struct {
+	Algorithm string `json:"algorithm"`
+	KeyID     string `json:"key_id,omitempty"`
+	Signature string `json:"signature"`
 }
 
 type releaseAdvisory struct {
@@ -410,7 +429,7 @@ func readAdvisoryFeed(ctx context.Context, rawURL string, timeout time.Duration)
 	parsed, err := url.Parse(rawURL)
 	if err == nil && parsed.Scheme == "file" {
 		data, err = os.ReadFile(parsed.Path)
-	} else if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+	} else if err == nil && parsed.Scheme == "https" {
 		httpClient := &http.Client{Timeout: timeout}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
@@ -425,6 +444,10 @@ func readAdvisoryFeed(ctx context.Context, rawURL string, timeout time.Duration)
 			return advisoryFeed{}, fmt.Errorf("release advisory feed returned HTTP %d", resp.StatusCode)
 		}
 		data, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	} else if err == nil && parsed.Scheme == "http" {
+		return advisoryFeed{}, errors.New("remote advisory feed URL must use https://")
+	} else if err == nil && parsed.Scheme != "" {
+		return advisoryFeed{}, fmt.Errorf("unsupported advisory feed URL scheme %q", parsed.Scheme)
 	} else {
 		data, err = os.ReadFile(rawURL)
 	}
@@ -437,6 +460,69 @@ func readAdvisoryFeed(ctx context.Context, rawURL string, timeout time.Duration)
 		return advisoryFeed{}, err
 	}
 	return feed, nil
+}
+
+func isLocalAdvisoryFeedURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "" || parsed.Scheme == "file"
+}
+
+func verifyAdvisoryFeedTrust(feed advisoryFeed, trustedKey string, allowUnsigned bool) error {
+	if allowUnsigned {
+		return nil
+	}
+	if strings.TrimSpace(trustedKey) == "" {
+		return errors.New("--trusted-feed-key is required unless --allow-unsigned-feed is set")
+	}
+	if feed.Signature == nil {
+		return errors.New("advisory feed signature is required")
+	}
+	if !strings.EqualFold(feed.Signature.Algorithm, "ed25519") {
+		return fmt.Errorf("unsupported advisory feed signature algorithm %q", feed.Signature.Algorithm)
+	}
+	publicKey, err := decodeBase64Value(trustedKey)
+	if err != nil {
+		return fmt.Errorf("trusted feed key: %w", err)
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("trusted feed key must be %d bytes", ed25519.PublicKeySize)
+	}
+	signature, err := decodeBase64Value(feed.Signature.Signature)
+	if err != nil {
+		return fmt.Errorf("advisory feed signature: %w", err)
+	}
+	unsigned := feed
+	unsigned.Signature = nil
+	payload, err := json.Marshal(unsigned)
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(ed25519.PublicKey(publicKey), payload, signature) {
+		return errors.New("advisory feed signature verification failed")
+	}
+	return nil
+}
+
+func decodeBase64Value(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	encodings := []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	}
+	var lastErr error
+	for _, encoding := range encodings {
+		decoded, err := encoding.DecodeString(value)
+		if err == nil {
+			return decoded, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 func evaluateUpdateFeed(feed advisoryFeed, current string) updateCheckResult {
@@ -776,11 +862,20 @@ func startRelayClients(
 			KeyID:             tenant.Authrim.HMACKeys.Active.KID,
 			Secret:            activeSecret,
 			Directory:         runtime.Directory,
-			RequestTimeout:    time.Duration(runtime.RequestTimeoutMS) * time.Millisecond,
-			Concurrency:       runtime.ConcurrencyLimit,
-			ReconnectMin:      time.Duration(tenant.Authrim.Relay.ReconnectMinMS) * time.Millisecond,
-			ReconnectMax:      time.Duration(tenant.Authrim.Relay.ReconnectMaxMS) * time.Millisecond,
-			Logger:            logger,
+			Audit:             auditlog.NewJSONSink(os.Stdout),
+			AuditHashSecret:   runtime.AuditHashSecret,
+			Protection: relayadapter.ProtectionPolicy{
+				WindowMS:              tenant.Protection.StormWindowMS,
+				BlockMS:               tenant.Protection.StormBlockMS,
+				MalformedRequestLimit: tenant.Protection.MalformedRequestLimit,
+				ReplayLimit:           tenant.Protection.ReplayLimit,
+				DirectoryErrorLimit:   tenant.Protection.DirectoryErrorLimit,
+			},
+			RequestTimeout: time.Duration(runtime.RequestTimeoutMS) * time.Millisecond,
+			Concurrency:    runtime.ConcurrencyLimit,
+			ReconnectMin:   time.Duration(tenant.Authrim.Relay.ReconnectMinMS) * time.Millisecond,
+			ReconnectMax:   time.Duration(tenant.Authrim.Relay.ReconnectMaxMS) * time.Millisecond,
+			Logger:         logger,
 		})
 		if err != nil {
 			return fmt.Errorf("tenant %s relay client: %w", tenant.TenantID, err)

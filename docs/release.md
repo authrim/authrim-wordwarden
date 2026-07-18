@@ -120,8 +120,15 @@ Wordwarden does not auto-update in the initial managed offering. Operators check
 the signed advisory feed and then manually install a verified release.
 
 ```sh
-wordwarden update check --feed-url https://example.com/wordwarden/stable.json
+wordwarden update check \
+  --feed-url https://example.com/wordwarden/stable.json \
+  --trusted-feed-key <base64url-ed25519-public-key>
 ```
+
+Unsigned feeds are accepted only for local file-based test fixtures when
+`--allow-unsigned-feed` is set. Remote feeds must use `https://` and must carry
+an Ed25519 signature. The signature covers the canonical JSON produced from the
+advisory feed with the `signature` field omitted.
 
 The advisory feed is JSON:
 
@@ -141,7 +148,12 @@ The advisory feed is JSON:
       "updated_at": "2026-06-27T00:00:00Z",
       "release_url": "https://github.com/authrim/authrim-wordwarden/releases/tag/v0.1.0-beta.2"
     }
-  ]
+  ],
+  "signature": {
+    "algorithm": "ed25519",
+    "key_id": "wordwarden-release-2026-06",
+    "signature": "base64url-signature"
+  }
 }
 ```
 

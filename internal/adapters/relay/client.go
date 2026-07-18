@@ -14,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/authrim/authrim-wordwarden/internal/core/audit"
 	"github.com/authrim/authrim-wordwarden/internal/core/directory"
+	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -40,6 +42,9 @@ type Config struct {
 	KeyID             string
 	Secret            []byte
 	Directory         directory.Client
+	Audit             audit.Sink
+	AuditHashSecret   []byte
+	Protection        ProtectionPolicy
 	RequestTimeout    time.Duration
 	Concurrency       int
 	ReconnectMin      time.Duration
@@ -50,8 +55,19 @@ type Config struct {
 type Client struct {
 	config  Config
 	limit   chan struct{}
+	replay  *replayCache
+	storms  *relayStorms
+	audit   audit.Sink
 	logger  *slog.Logger
 	writeMu sync.Mutex
+}
+
+type ProtectionPolicy struct {
+	WindowMS              int
+	BlockMS               int
+	MalformedRequestLimit int
+	ReplayLimit           int
+	DirectoryErrorLimit   int
 }
 
 type challengeMessage struct {
@@ -194,6 +210,9 @@ func NewClient(config Config) (*Client, error) {
 	if config.ReconnectMax <= 0 {
 		config.ReconnectMax = 30 * time.Second
 	}
+	if config.Audit == nil {
+		config.Audit = audit.DiscardSink{}
+	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
@@ -209,6 +228,9 @@ func NewClient(config Config) (*Client, error) {
 	return &Client{
 		config: config,
 		limit:  make(chan struct{}, config.Concurrency),
+		replay: newReplayCache(5 * time.Minute),
+		storms: newRelayStorms(config.Protection),
+		audit:  config.Audit,
 		logger: config.Logger,
 	}, nil
 }
@@ -335,37 +357,100 @@ func (c *Client) authenticate(ctx context.Context, conn *websocket.Conn) error {
 }
 
 func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, request verifyRequestMessage) {
+	_ = c.writeJSON(ctx, conn, c.processVerifyRequest(ctx, request))
+}
+
+func (c *Client) processVerifyRequest(ctx context.Context, request verifyRequestMessage) any {
+	start := time.Now()
 	if !c.validVerifyRequest(request) {
-		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:                "verify.error",
-			Protocol:            Protocol,
-			ProtocolVersion:     ProtocolVersion,
-			MinSupportedVersion: MinSupportedVersion,
-			ID:                  request.ID,
-			RequestID:           request.RequestID,
-			TenantID:            request.TenantID,
-			ConnectorID:         request.ConnectorID,
-			Error:               errorPayload{Code: "invalid_relay_request", Retryable: false},
+		if c.stormBlocked(relayStormKindMalformed) {
+			c.emit(ctx, audit.Event{
+				EventType:   audit.EventVerifyError,
+				TenantID:    c.config.TenantID,
+				ConnectorID: c.config.ConnectorID,
+				RequestID:   request.RequestID,
+				Result:      "error",
+				ErrorCode:   "malformed_request_storm_limited",
+				Retryable:   true,
+				LatencyMS:   latencyMS(start),
+			})
+			return c.verifyError(request, "malformed_request_storm_limited", true)
+		}
+		c.emit(ctx, audit.Event{
+			EventType:   audit.EventVerifyError,
+			TenantID:    c.config.TenantID,
+			ConnectorID: c.config.ConnectorID,
+			RequestID:   request.RequestID,
+			Result:      "error",
+			ErrorCode:   "invalid_relay_request",
+			Retryable:   false,
+			LatencyMS:   latencyMS(start),
 		})
-		return
+		c.recordStorm(relayStormKindMalformed)
+		return c.verifyError(request, "invalid_relay_request", false)
+	}
+
+	if c.stormBlocked(relayStormKindReplay) {
+		c.emit(ctx, audit.Event{
+			EventType:    audit.EventVerifyError,
+			TenantID:     c.config.TenantID,
+			ConnectorID:  c.config.ConnectorID,
+			RequestID:    request.RequestID,
+			Result:       "error",
+			ErrorCode:    "replay_storm_limited",
+			Retryable:    true,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: c.usernameHash(request.Username),
+		})
+		return c.verifyError(request, "replay_storm_limited", true)
+	}
+	if !c.replay.Remember(relayReplayKey(request)) {
+		c.emit(ctx, audit.Event{
+			EventType:    audit.EventReplayDetected,
+			TenantID:     c.config.TenantID,
+			ConnectorID:  c.config.ConnectorID,
+			RequestID:    request.RequestID,
+			Result:       "error",
+			ErrorCode:    "replay_detected",
+			Retryable:    false,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: c.usernameHash(request.Username),
+		})
+		c.recordStorm(relayStormKindReplay)
+		return c.verifyError(request, "replay_detected", false)
 	}
 
 	select {
 	case c.limit <- struct{}{}:
 		defer func() { <-c.limit }()
 	default:
-		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:                "verify.error",
-			Protocol:            Protocol,
-			ProtocolVersion:     ProtocolVersion,
-			MinSupportedVersion: MinSupportedVersion,
-			ID:                  request.ID,
-			RequestID:           request.RequestID,
-			TenantID:            request.TenantID,
-			ConnectorID:         request.ConnectorID,
-			Error:               errorPayload{Code: "connector_rate_limited", Retryable: true},
+		c.emit(ctx, audit.Event{
+			EventType:    audit.EventVerifyError,
+			TenantID:     c.config.TenantID,
+			ConnectorID:  c.config.ConnectorID,
+			RequestID:    request.RequestID,
+			Result:       "error",
+			ErrorCode:    "connector_rate_limited",
+			Retryable:    true,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: c.usernameHash(request.Username),
 		})
-		return
+		return c.verifyError(request, "connector_rate_limited", true)
+	}
+
+	if c.stormBlocked(relayStormKindDirectoryError) {
+		c.emit(ctx, audit.Event{
+			EventType:    audit.EventVerifyError,
+			TenantID:     c.config.TenantID,
+			ConnectorID:  c.config.ConnectorID,
+			RequestID:    request.RequestID,
+			Result:       "error",
+			ErrorCode:    "directory_error_storm_limited",
+			Retryable:    true,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: c.usernameHash(request.Username),
+		})
+		return c.verifyError(request, "directory_error_storm_limited", true)
 	}
 
 	requestCtx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
@@ -376,35 +461,40 @@ func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, 
 		AttributeNames: request.AttributeNames,
 	})
 	if err != nil {
-		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:                "verify.error",
-			Protocol:            Protocol,
-			ProtocolVersion:     ProtocolVersion,
-			MinSupportedVersion: MinSupportedVersion,
-			ID:                  request.ID,
-			RequestID:           request.RequestID,
-			TenantID:            request.TenantID,
-			ConnectorID:         request.ConnectorID,
-			Error:               errorPayload{Code: directoryErrorCode(err), Retryable: true},
+		code := directoryErrorCode(err)
+		c.emit(ctx, audit.Event{
+			EventType:    audit.EventVerifyError,
+			TenantID:     c.config.TenantID,
+			ConnectorID:  c.config.ConnectorID,
+			RequestID:    request.RequestID,
+			Result:       "error",
+			ErrorCode:    code,
+			Retryable:    true,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: c.usernameHash(request.Username),
 		})
-		return
+		c.recordStorm(relayStormKindDirectoryError)
+		return c.verifyError(request, code, true)
 	}
 
 	credentialResult := result.CredentialResult()
 	if credentialResult == directory.CredentialResultSourceUnavailable {
-		_ = c.writeJSON(ctx, conn, verifyErrorMessage{
-			Type:                "verify.error",
-			Protocol:            Protocol,
-			ProtocolVersion:     ProtocolVersion,
-			MinSupportedVersion: MinSupportedVersion,
-			ID:                  request.ID,
-			RequestID:           request.RequestID,
-			TenantID:            request.TenantID,
-			ConnectorID:         request.ConnectorID,
-			Error:               errorPayload{Code: result.SafeReason(), Retryable: true},
+		code := result.SafeReason()
+		c.emit(ctx, audit.Event{
+			EventType:    audit.EventVerifyError,
+			TenantID:     c.config.TenantID,
+			ConnectorID:  c.config.ConnectorID,
+			RequestID:    request.RequestID,
+			Result:       "error",
+			ErrorCode:    code,
+			Retryable:    true,
+			LatencyMS:    latencyMS(start),
+			UsernameHash: c.usernameHash(request.Username),
 		})
-		return
+		c.recordStorm(relayStormKindDirectoryError)
+		return c.verifyError(request, code, true)
 	}
+	c.resetStorm(relayStormKindDirectoryError)
 
 	response := verifyResponseMessage{
 		Type:                "verify.response",
@@ -427,8 +517,70 @@ func (c *Client) handleVerifyRequest(ctx context.Context, conn *websocket.Conn, 
 		}
 		response.Attributes = result.Attributes
 		response.GroupFacts = groupFactMessages(result.GroupFacts)
+		c.emit(ctx, audit.Event{
+			EventType:       audit.EventVerifySuccess,
+			TenantID:        c.config.TenantID,
+			ConnectorID:     c.config.ConnectorID,
+			RequestID:       request.RequestID,
+			Result:          "success",
+			Retryable:       false,
+			LatencyMS:       latencyMS(start),
+			DirectoryStatus: "ok",
+			UsernameHash:    c.usernameHash(request.Username),
+		})
+		return response
 	}
-	_ = c.writeJSON(ctx, conn, response)
+
+	c.emit(ctx, audit.Event{
+		EventType:       audit.EventVerifyFailure,
+		TenantID:        c.config.TenantID,
+		ConnectorID:     c.config.ConnectorID,
+		RequestID:       request.RequestID,
+		Result:          string(credentialResult),
+		Reason:          result.SafeReason(),
+		Retryable:       false,
+		LatencyMS:       latencyMS(start),
+		DirectoryStatus: "ok",
+		UsernameHash:    c.usernameHash(request.Username),
+	})
+	return response
+}
+
+func (c *Client) verifyError(request verifyRequestMessage, code string, retryable bool) verifyErrorMessage {
+	return verifyErrorMessage{
+		Type:                "verify.error",
+		Protocol:            Protocol,
+		ProtocolVersion:     ProtocolVersion,
+		MinSupportedVersion: MinSupportedVersion,
+		ID:                  request.ID,
+		RequestID:           request.RequestID,
+		TenantID:            c.config.TenantID,
+		ConnectorID:         c.config.ConnectorID,
+		Error:               errorPayload{Code: code, Retryable: retryable},
+	}
+}
+
+func (c *Client) emit(ctx context.Context, event audit.Event) {
+	event.EventID = uuid.NewString()
+	event.Timestamp = time.Now().UTC()
+	_ = c.audit.WriteEvent(ctx, event)
+}
+
+func (c *Client) usernameHash(username string) string {
+	if username == "" || len(c.config.AuditHashSecret) == 0 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, c.config.AuditHashSecret)
+	_, _ = mac.Write([]byte(username))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func latencyMS(start time.Time) int64 {
+	return time.Since(start).Milliseconds()
+}
+
+func relayReplayKey(request verifyRequestMessage) string {
+	return request.TenantID + ":" + request.ConnectorID + ":" + request.RequestID
 }
 
 func groupFactMessages(facts []directory.GroupFact) []groupFactMessage {
@@ -558,5 +710,132 @@ func directoryErrorCode(err error) string {
 		return "directory_referral"
 	default:
 		return "directory_error"
+	}
+}
+
+type replayCache struct {
+	mu      sync.Mutex
+	ttl     time.Duration
+	entries map[string]time.Time
+}
+
+func newReplayCache(ttl time.Duration) *replayCache {
+	return &replayCache{ttl: ttl, entries: map[string]time.Time{}}
+}
+
+func (c *replayCache) Remember(key string) bool {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for entry, expiresAt := range c.entries {
+		if now.After(expiresAt) {
+			delete(c.entries, entry)
+		}
+	}
+	if _, ok := c.entries[key]; ok {
+		return false
+	}
+	c.entries[key] = now.Add(c.ttl)
+	return true
+}
+
+type relayStormKind string
+
+const (
+	relayStormKindMalformed      relayStormKind = "malformed_request"
+	relayStormKindReplay         relayStormKind = "replay"
+	relayStormKindDirectoryError relayStormKind = "directory_error"
+)
+
+type relayStorms struct {
+	mu     sync.Mutex
+	policy ProtectionPolicy
+	now    func() time.Time
+	states map[relayStormKind]relayStormState
+}
+
+type relayStormState struct {
+	windowStart  time.Time
+	count        int
+	blockedUntil time.Time
+}
+
+func newRelayStorms(policy ProtectionPolicy) *relayStorms {
+	return &relayStorms{policy: defaultProtectionPolicy(policy), now: time.Now, states: map[relayStormKind]relayStormState{}}
+}
+
+func defaultProtectionPolicy(policy ProtectionPolicy) ProtectionPolicy {
+	if policy.WindowMS <= 0 {
+		policy.WindowMS = 10000
+	}
+	if policy.BlockMS <= 0 {
+		policy.BlockMS = 30000
+	}
+	if policy.MalformedRequestLimit <= 0 {
+		policy.MalformedRequestLimit = 20
+	}
+	if policy.ReplayLimit <= 0 {
+		policy.ReplayLimit = 10
+	}
+	if policy.DirectoryErrorLimit <= 0 {
+		policy.DirectoryErrorLimit = 5
+	}
+	return policy
+}
+
+func (c *Client) stormBlocked(kind relayStormKind) bool {
+	return c.storms.blocked(kind)
+}
+
+func (c *Client) recordStorm(kind relayStormKind) {
+	c.storms.record(kind)
+}
+
+func (c *Client) resetStorm(kind relayStormKind) {
+	c.storms.reset(kind)
+}
+
+func (s *relayStorms) blocked(kind relayStormKind) bool {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.states[kind]
+	return !state.blockedUntil.IsZero() && now.Before(state.blockedUntil)
+}
+
+func (s *relayStorms) record(kind relayStormKind) {
+	now := s.now()
+	window := time.Duration(s.policy.WindowMS) * time.Millisecond
+	block := time.Duration(s.policy.BlockMS) * time.Millisecond
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.states[kind]
+	if state.windowStart.IsZero() || now.Sub(state.windowStart) > window {
+		state.windowStart = now
+		state.count = 0
+	}
+	state.count++
+	if state.count >= s.limit(kind) {
+		state.blockedUntil = now.Add(block)
+	}
+	s.states[kind] = state
+}
+
+func (s *relayStorms) reset(kind relayStormKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.states, kind)
+}
+
+func (s *relayStorms) limit(kind relayStormKind) int {
+	switch kind {
+	case relayStormKindMalformed:
+		return s.policy.MalformedRequestLimit
+	case relayStormKindReplay:
+		return s.policy.ReplayLimit
+	case relayStormKindDirectoryError:
+		return s.policy.DirectoryErrorLimit
+	default:
+		return 1
 	}
 }

@@ -112,6 +112,8 @@ sudo systemctl restart authrim-wordwarden
 The sample unit uses a restricted service account, no Linux capabilities,
 `ProtectSystem=strict`, `NoNewPrivileges=true`, and namespace/device restrictions.
 
+The unit keeps `server.state_dir` writable through `StateDirectory=authrim-wordwarden` and `ReadWritePaths=/var/lib/authrim-wordwarden`; keep this directory persistent so the connector `instance_id` remains stable.
+
 If your deployment needs to read CA or secret files from a path outside
 `/etc/authrim-wordwarden`, update both the file permissions and the unit's
 read-only path policy. Prefer keeping all Wordwarden runtime config under

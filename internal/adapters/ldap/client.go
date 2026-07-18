@@ -168,8 +168,8 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 
 		user, err := c.resolveUserWithAttributes(ctx, conn, processed.Value, request.AttributeNames)
 		if err != nil {
-			if err == directory.ErrUserNotFound {
-				return directory.FailedVerification(directory.ReasonInvalidCredentials), nil
+			if result, ok := userResolutionFailureResult(err); ok {
+				return result, nil
 			}
 			return directory.VerifyPasswordResult{}, err
 		}
@@ -222,8 +222,8 @@ func (c Client) VerifyPassword(ctx context.Context, request directory.VerifyPass
 
 		user, err := c.resolveDirectBindUser(ctx, conn, processed.Value, request.AttributeNames)
 		if err != nil {
-			if err == directory.ErrUserNotFound {
-				return directory.FailedVerification(directory.ReasonInvalidCredentials), nil
+			if result, ok := userResolutionFailureResult(err); ok {
+				return result, nil
 			}
 			return directory.VerifyPasswordResult{}, err
 		}
@@ -667,13 +667,13 @@ func cloneSearchRequest(request *ldap.SearchRequest) *ldap.SearchRequest {
 
 func (c Client) allowedReferral(raw string) (endpoint string, baseDN string, ok bool) {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
+	if err != nil || parsed.Host == "" || !c.referralSchemeAllowed(parsed.Scheme) {
 		return "", "", false
 	}
 	refEndpoint := referralEndpoint(parsed)
 	for _, allowed := range c.config.Referrals.AllowedURLs {
 		allowedParsed, err := url.Parse(allowed)
-		if err != nil || allowedParsed.Host == "" {
+		if err != nil || allowedParsed.Host == "" || !c.referralSchemeAllowed(allowedParsed.Scheme) {
 			continue
 		}
 		if referralEndpoint(allowedParsed) == refEndpoint {
@@ -687,6 +687,13 @@ func (c Client) allowedReferral(raw string) (endpoint string, baseDN string, ok 
 		}
 	}
 	return "", "", false
+}
+
+func (c Client) referralSchemeAllowed(scheme string) bool {
+	if c.config.TLS.StartTLS {
+		return scheme == "ldap"
+	}
+	return scheme == "ldaps"
 }
 
 func referralEndpoint(parsed *url.URL) string {
@@ -762,6 +769,13 @@ func singleSearchEntry(entries []*ldap.Entry) (*ldap.Entry, error) {
 	default:
 		return nil, directory.ErrAmbiguousUser
 	}
+}
+
+func userResolutionFailureResult(err error) (directory.VerifyPasswordResult, bool) {
+	if errors.Is(err, directory.ErrUserNotFound) || errors.Is(err, directory.ErrAmbiguousUser) {
+		return directory.FailedVerification(directory.ReasonInvalidCredentials), true
+	}
+	return directory.VerifyPasswordResult{}, false
 }
 
 func requestedAttributes(requested []string, allowed []string) []string {

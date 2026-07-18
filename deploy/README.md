@@ -28,8 +28,9 @@ health check, and restart runbook.
 ## Docker Compose
 
 Copy `deploy/docker-compose/compose.yaml` into an environment-specific directory,
-mount a real `config.yaml`, and provide secrets through an env file or a secret
-manager sidecar.
+mount a real `config.yaml`, mount persistent writable `./state` storage for
+`server.state_dir`, and provide secrets through an env file or a secret manager
+sidecar.
 
 ```bash
 docker compose -f deploy/docker-compose/compose.yaml up -d
