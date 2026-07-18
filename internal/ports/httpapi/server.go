@@ -229,7 +229,13 @@ type errorPayload struct {
 	Retryable bool   `json:"retryable"`
 }
 
-const maxVerifyPasswordBodyBytes = 64 * 1024
+const (
+	maxVerifyPasswordBodyBytes = 64 * 1024
+	unknownMetricLabel         = "unknown"
+	invalidMetricLabel         = "invalid"
+	metricOverflowLabel        = "overflow"
+	maxMetricCounters          = 4096
+)
 
 func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
@@ -238,15 +244,14 @@ func (h *handler) verifyPassword(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		h.emit(req, audit.Event{
 			EventType:   audit.EventVerifyError,
-			ConnectorID: connectorID,
+			ConnectorID: unknownMetricLabel,
 			Result:      "error",
 			ErrorCode:   "unknown_connector",
 			Retryable:   false,
 			LatencyMS:   latencyMS(start),
 		})
 		writeError(w, http.StatusForbidden, errorResponse{
-			ConnectorID: connectorID,
-			Error:       errorPayload{Code: "unknown_connector", Retryable: false},
+			Error: errorPayload{Code: "unknown_connector", Retryable: false},
 		})
 		return
 	}
@@ -690,15 +695,42 @@ func newMetricsStore() *metricsStore {
 }
 
 func (m *metricsStore) record(event audit.Event) {
+	key := metricKey{
+		EventType:   metricLabel(event.EventType, unknownMetricLabel),
+		TenantID:    metricLabel(event.TenantID, unknownMetricLabel),
+		ConnectorID: metricLabel(event.ConnectorID, unknownMetricLabel),
+		Result:      metricLabel(event.Result, unknownMetricLabel),
+		ErrorCode:   metricLabel(event.ErrorCode, ""),
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.counters[metricKey{
-		EventType:   event.EventType,
-		TenantID:    event.TenantID,
-		ConnectorID: event.ConnectorID,
-		Result:      event.Result,
-		ErrorCode:   event.ErrorCode,
-	}]++
+	if _, ok := m.counters[key]; !ok && len(m.counters) >= maxMetricCounters {
+		key = metricKey{
+			EventType:   metricOverflowLabel,
+			TenantID:    metricOverflowLabel,
+			ConnectorID: metricOverflowLabel,
+			Result:      metricOverflowLabel,
+			ErrorCode:   metricOverflowLabel,
+		}
+	}
+	m.counters[key]++
+}
+
+func metricLabel(value string, emptyLabel string) string {
+	if value == "" {
+		return emptyLabel
+	}
+	if len(value) > 128 {
+		return invalidMetricLabel
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return invalidMetricLabel
+	}
+	return value
 }
 
 func (m *metricsStore) prometheus() string {

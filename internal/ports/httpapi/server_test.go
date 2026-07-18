@@ -141,6 +141,56 @@ func TestMetricsEndpointCountsVerifyEventsWithoutUserIdentifiers(t *testing.T) {
 	}
 }
 
+func TestUnknownConnectorMetricsUseBoundedLabel(t *testing.T) {
+	handler := newTestHandler()
+	for i := 0; i < 25; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify-password", strings.NewReader(`{}`))
+		req.Header.Set(hmacadapter.HeaderConnectorID, fmt.Sprintf("attacker-controlled-%d", i))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("verify status = %d body = %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	handler.ServeHTTP(metricsRec, metricsReq)
+	if metricsRec.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d", metricsRec.Code)
+	}
+
+	body := metricsRec.Body.String()
+	if strings.Contains(body, "attacker-controlled-") {
+		t.Fatalf("metrics included attacker-controlled connector ids: %s", body)
+	}
+	want := `wordwarden_events_total{event_type="directory_password.verify.error",tenant_id="unknown",connector_id="unknown",result="error",error_code="unknown_connector"} 25`
+	if !strings.Contains(body, want) {
+		t.Fatalf("metrics body missing bounded unknown connector counter %q: %s", want, body)
+	}
+}
+
+func TestMetricsStoreCapsUnexpectedCardinality(t *testing.T) {
+	store := newMetricsStore()
+	for i := 0; i < maxMetricCounters+10; i++ {
+		store.record(audit.Event{
+			EventType:   audit.EventVerifyError,
+			TenantID:    "tenant-a",
+			ConnectorID: fmt.Sprintf("wwcon_%016d", i),
+			Result:      "error",
+			ErrorCode:   "synthetic_error",
+		})
+	}
+
+	if got, want := len(store.counters), maxMetricCounters+1; got != want {
+		t.Fatalf("counter cardinality = %d, want %d", got, want)
+	}
+	body := store.prometheus()
+	if !strings.Contains(body, `connector_id="overflow"`) {
+		t.Fatalf("metrics body missing overflow counter: %s", body)
+	}
+}
+
 func TestVerifyPasswordSuccess(t *testing.T) {
 	req := signedVerifyPasswordRequest(t, `{
 		"request_id":"req_123",
